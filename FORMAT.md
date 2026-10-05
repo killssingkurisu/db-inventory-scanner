@@ -73,6 +73,21 @@ A charm key is the gem's stat and its rank, the same keys the calculator uses:
 - `attack`, `expertise`, `defense`, `hp`, `critChance`, `critPower`, `gearFind`, `goldFind`, `materialFind`: the top rank (10) of that gem, such as *Infinite Sapphire* for `expertise`.
 - `attack@7`: rank 7 of the Attack gem (*Radiant Citrine*). Ranks go from 1 to 10.
 - `eyeOfDiscovery`, `gleamingShard`, `shimmeringFragment`, `twilightSliver`: the special charms.
+- `expertise+defense:R`: a gem with a Magic Forge bonus, here *Infinite Sapphire of Deflecting*. After the `+` comes the second stat, then its tier: `R` adds half of what the same rank of that gem gives, `L` all of it. The game names them with a suffix:
+
+  | Second stat | `R` (half) | `L` (full) |
+  |---|---|---|
+  | `gearFind` | of Luck | of Fortune |
+  | `critChance` | of Skill | of Precision |
+  | `goldFind` | of Greed | of Wealth |
+  | `materialFind` | of Foraging | of Scouring |
+  | `critPower` | of Carnage | of Ruin |
+  | `hp` | of Health | of Fortitude |
+  | `attack` | of Strength | of Might |
+  | `expertise` | of the Mind | of Brilliance |
+  | `defense` | of Deflecting | of Protection |
+
+  So *Radiant Citrine of the Mind* is `attack@7+expertise:R` and *Infinite Amethyst of Ruin* is `critChance+critPower:L`.
 
 [data/catalog.json](data/catalog.json) lists every charm with its key and its English and Turkish names.
 

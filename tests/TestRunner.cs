@@ -87,6 +87,14 @@ static class TestRunner
         Check("charm rank", catalog.MatchCharm("Radiant Citrine").Item.Key, "attack@7");
         Check("special charm", catalog.MatchCharm("Twilight Sliver").Item.Key, "twilightSliver");
         Check("Turkish charm name", catalog.MatchCharm("Sonsuz Safir").Item.Key, "expertise");
+        // Magic Forge charms, read in the first real scan.
+        Check("forged charms", catalog.ForgedCharms.Count, 90 * 9 * 2);
+        Check("forged charm of Deflecting", catalog.MatchCharm("Infinite Sapphire of Deflecting").Item.Key, "expertise+defense:R");
+        Check("forged charm of Strength", catalog.MatchCharm("Infinite Amethyst of Strength").Item.Key, "critChance+attack:R");
+        Check("forged charm of Ruin", catalog.MatchCharm("Infinite Amethyst of Ruin").Item.Key, "critChance+critPower:L");
+        Check("forged lower rank", catalog.MatchCharm("Radiant Citrine of the Mind").Item.Key, "attack@7+expertise:R");
+        Check("forged charm with OCR noise", catalog.MatchCharm("Infinite Sapphire of Deflectinq").Item.Key, "expertise+defense:R");
+        Check("plain charm stays plain", catalog.MatchCharm("Infinite Sapphire").Item.Key, "expertise");
 
         // Stat lines.
         int v; string stat;

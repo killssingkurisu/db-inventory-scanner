@@ -39,7 +39,7 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $v = "1.0.0"
+          $v = (Select-String -Path src/DbScanner/DbScanner.csproj -Pattern '<Version>([^<]+)</Version>').Matches[0].Groups[1].Value
           if ($env:GITHUB_REF_TYPE -eq "tag") { $v = $env:GITHUB_REF_NAME.TrimStart("v") }
           "value=$v" >> $env:GITHUB_OUTPUT
 

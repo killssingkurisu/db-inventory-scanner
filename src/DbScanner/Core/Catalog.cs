@@ -23,7 +23,10 @@ namespace DbScanner.Core
         internal string Norm;
     }
 
-    /// <summary>One charm from CharmTypes. Key is the calculator's charm key ("attack", "attack@7", "eyeOfDiscovery").</summary>
+    /// <summary>
+    /// One charm. Key is the calculator's charm key: "attack" (top rank), "attack@7" (rank 7),
+    /// "eyeOfDiscovery" (a special charm), or with a Magic Forge bonus "expertise+defense:R".
+    /// </summary>
     public sealed class CharmDef
     {
         public int Id;
@@ -49,7 +52,17 @@ namespace DbScanner.Core
     public sealed class Catalog
     {
         public readonly List<GearDef> Gear = new List<GearDef>();
+        /// <summary>The 94 charms of CharmTypes.</summary>
         public readonly List<CharmDef> Charms = new List<CharmDef>();
+        /// <summary>Gem charms with a Magic Forge bonus ("Infinite Sapphire of Deflecting").</summary>
+        public readonly List<CharmDef> ForgedCharms = new List<CharmDef>();
+
+        // The game's charm types in item-id order, and the suffixes it names a forged charm with
+        // (class_64 in the client): tier R adds half of the same-rank gem of the second type,
+        // tier L all of it.
+        static readonly string[] CharmTypes = { "", "Trog", "Infernal", "Undead", "Mythic", "Draconic", "Sylvan", "Melee", "Magic", "Armor" };
+        static readonly string[] SuffixR = { "", "of Luck", "of Skill", "of Greed", "of Foraging", "of Carnage", "of Health", "of Strength", "of the Mind", "of Deflecting" };
+        static readonly string[] SuffixL = { "", "of Fortune", "of Precision", "of Wealth", "of Scouring", "of Ruin", "of Fortitude", "of Might", "of Brilliance", "of Protection" };
 
         public static Catalog Load(string json)
         {
@@ -88,7 +101,45 @@ namespace DbScanner.Core
                 def.Norms = def.Names.Select(Normalize).ToArray();
                 cat.Charms.Add(def);
             }
+            cat.AddForgedCharms();
             return cat;
+        }
+
+        /// <summary>Every gem charm with every Magic Forge bonus, named the way the game names them.</summary>
+        void AddForgedCharms()
+        {
+            // The stat key of each type, from its charms ("Armor10" is "defense", "Melee7" is "attack@7").
+            var statOf = new Dictionary<string, string>();
+            foreach (var c in Charms)
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(c.InternalName ?? "", @"^([A-Za-z]+?)(\d+)$");
+                if (m.Success && Array.IndexOf(CharmTypes, m.Groups[1].Value) > 0) statOf[m.Groups[1].Value] = c.Key.Split('@')[0];
+            }
+            foreach (var c in Charms)
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(c.InternalName ?? "", @"^([A-Za-z]+?)(\d+)$");
+                if (!m.Success || Array.IndexOf(CharmTypes, m.Groups[1].Value) <= 0) continue;
+                for (int s = 1; s < CharmTypes.Length; s++)
+                {
+                    string stat;
+                    if (!statOf.TryGetValue(CharmTypes[s], out stat)) continue;
+                    for (int tier = 1; tier <= 2; tier++)
+                    {
+                        string suffix = (tier == 1 ? SuffixR : SuffixL)[s];
+                        var def = new CharmDef
+                        {
+                            Id = c.Id | (s << 9) | (tier << 14),
+                            InternalName = c.InternalName + (tier == 1 ? "R" : "L") + s.ToString(CultureInfo.InvariantCulture),
+                            Key = c.Key + "+" + stat + ":" + (tier == 1 ? "R" : "L"),
+                            Names = c.Names.Select(n => n + " " + suffix).ToArray(),
+                            Icon = c.Icon,
+                            Description = c.Description
+                        };
+                        def.Norms = def.Names.Select(Normalize).ToArray();
+                        ForgedCharms.Add(def);
+                    }
+                }
+            }
         }
 
         /// <summary>Lower case, letters and digits only, single spaces; accents dropped (Turkish names).</summary>
@@ -183,7 +234,7 @@ namespace DbScanner.Core
         {
             string t = Normalize(ocrText);
             var res = new Match<CharmDef> { Text = ocrText };
-            foreach (var c in Charms)
+            foreach (var c in Charms.Concat(ForgedCharms))
             {
                 double best = 0;
                 foreach (string n in c.Norms) best = Math.Max(best, Similarity(t, n));
