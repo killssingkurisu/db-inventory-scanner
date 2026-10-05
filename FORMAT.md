@@ -42,6 +42,7 @@ DB Inventory Scanner saves a scan as UTF-8 JSON. The [DPS Calculator](https://ki
 | `scannedAt` | When the scan finished, UTC, ISO 8601. |
 | `character.name` | The name in the inventory header. |
 | `character.class` | `Rogue`, `Mage` or `Paladin`, taken from the class of the equipped gear. |
+| `character.talents` | Optional, not written yet. A talent build string in the talent calculator's format (`3225h3…`, the discipline digit first). The calculator keeps it with the load when it belongs to the scan's class. Reserved for a scanner version that reads the talent tree. |
 | `gear[]` | Every gear piece found: the equipped ones and everything in the bag pages. |
 | `charms[]` | Charms in the charm bags, one entry per kind, with how many there are. |
 | `notes` | Optional. Things the scanner wasn't sure of, for a person to check. |
