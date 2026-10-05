@@ -2,7 +2,8 @@
 
 # DB Inventory Scanner
 
-A small Windows program that reads every gear piece and charm in your Dungeon Blitz inventory and saves it in a file the [DPS Calculator](https://killssingkurisu.github.io/db-dps-calculator/) imports. It works like [Inventory Kamera](https://github.com/Andrewthe13th/Inventory_Kamera) does for Genshin Impact: it moves the mouse over each item, reads the tooltip from the screen, and looks the name up in the game's own item list.
+A small Windows program that reads every gear piece and charm in your Dungeon Blitz inventory and saves it in a file the [DPS Calculator](https://killssingkurisu.github.io/db-dps-calculator/) imports.
+
 
 ## Download
 
