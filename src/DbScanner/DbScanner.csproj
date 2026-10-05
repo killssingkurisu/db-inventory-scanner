@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- .NET Framework 4.8 ships with Windows 10 and 11, so the app needs no runtime install. -->
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <AssemblyName>DbScanner</AssemblyName>
+    <RootNamespace>DbScanner</RootNamespace>
+    <Version>1.0.0</Version>
+    <Product>DB Inventory Scanner</Product>
+    <AssemblyTitle>DB Inventory Scanner</AssemblyTitle>
+    <Description>Reads Dungeon Blitz gear and charms from the screen for the DPS Calculator.</Description>
+    <Copyright>MIT License</Copyright>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.IO.Compression" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Windows.Media.Ocr and the other Windows Runtime types, for .NET Framework. -->
+    <PackageReference Include="Microsoft.Windows.SDK.Contracts" Version="10.0.19041.1" />
+    <!-- Reference assemblies for .NET Framework 4.8, so the build doesn't depend on a targeting pack. -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\data\catalog.json" LogicalName="catalog.json" />
+  </ItemGroup>
+
+</Project>

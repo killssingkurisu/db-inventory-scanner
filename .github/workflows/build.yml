@@ -1,0 +1,108 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  checks:
+    name: Core checks (Linux, Tesseract)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Mono and Tesseract
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends mono-devel mono-mcs libmono-system-windows-forms4.0-cil libgdiplus tesseract-ocr tesseract-ocr-eng
+      - name: Type-check the whole app
+        run: sh tools/check-build.sh
+      - name: Run the checks on real screenshots
+        run: sh tests/run.sh
+
+  windows:
+    name: Windows build and installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          $v = "1.0.0"
+          if ($env:GITHUB_REF_TYPE -eq "tag") { $v = $env:GITHUB_REF_NAME.TrimStart("v") }
+          "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build
+        run: dotnet build src/DbScanner/DbScanner.csproj -c Release -o out/app -p:Version=${{ steps.version.outputs.value }}
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress | Out-Null
+            $iscc = (Get-ChildItem "${env:ProgramFiles(x86)}", "$env:ProgramFiles" -Filter ISCC.exe -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          }
+          & $iscc "/DAppVersion=${{ steps.version.outputs.value }}" installer\DbScanner.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem out/app -Exclude *.pdb, *.xml
+          Compress-Archive -Path $files.FullName -DestinationPath "out/DbScanner-${{ steps.version.outputs.value }}-portable.zip"
+          Get-ChildItem out | Format-Table Name, Length
+
+      # The same checks as the Linux job, read with the text recognition built into Windows.
+      # Informational: the runner may not have an OCR language installed.
+      - name: Windows text recognition check
+        continue-on-error: true
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          $cap = "Language.OCR~~~en-US~0.0.1.0"
+          $state = (Get-WindowsCapability -Online -Name $cap).State
+          Write-Host "OCR language: $state"
+          if ($state -ne "Installed") {
+            try { Add-WindowsCapability -Online -Name $cap | Out-Host } catch { Write-Host "Couldn't add it: $_" }
+          }
+          dotnet build tests/WinOcrCheck/WinOcrCheck.csproj -c Release -o out/check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $lines = & out/check/WinOcrCheck.exe . 2>&1 | ForEach-Object { "$_" }
+          $code = $LASTEXITCODE
+          $lines | Out-Host
+          $text = ($lines -join "`n").Replace("%", "%25").Replace("`r", "").Replace("`n", "%0A")
+          Write-Host "::notice title=Windows OCR check::$text"
+          exit $code
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DbScanner-${{ steps.version.outputs.value }}
+          path: |
+            out/DbScanner-Setup-*.exe
+            out/DbScanner-*-portable.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: DB Inventory Scanner ${{ steps.version.outputs.value }}
+          body: |
+            **DbScanner-Setup-${{ steps.version.outputs.value }}.exe** installs the scanner for your Windows user (no administrator rights needed) and adds it to the Start menu.
+            **DbScanner-${{ steps.version.outputs.value }}-portable.zip** is the same program without an installer: unzip it anywhere and run DbScanner.exe.
+
+            Needs Windows 10 or 11. See the [README](https://github.com/${{ github.repository }}#readme) for how to scan and import into the [DPS Calculator](https://killssingkurisu.github.io/db-dps-calculator/).
+          files: |
+            out/DbScanner-Setup-*.exe
+            out/DbScanner-*-portable.zip
