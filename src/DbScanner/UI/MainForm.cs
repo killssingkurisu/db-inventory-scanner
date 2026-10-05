@@ -19,7 +19,7 @@ namespace DbScanner.UI
     public sealed class MainForm : Form
     {
         public const string CalculatorUrl = "https://killssingkurisu.github.io/db-dps-calculator/";
-        const int HotkeyId = 0xDB01;
+        const int HotkeyId = 0x0DB1;   // application hotkey ids are 0x0000-0xBFFF
 
         static readonly Color Bg = Color.FromArgb(38, 48, 44);
         static readonly Color Panel = Color.FromArgb(52, 65, 59);
@@ -369,14 +369,28 @@ namespace DbScanner.UI
         {
             if (lastResult == null) return;
             string url = CalculatorLink(lastResult, "DB Inventory Scanner " + Version);
-            if (url.Length > 30000)
+            if (url.Length > 60000)
             {
                 CopyScan();
                 OpenUrl(CalculatorUrl);
                 MessageBox.Show(this, "This scan is too big for a link, so it was copied instead. In the calculator, press “Paste scan” in the Scanned gear panel.", Text);
                 return;
             }
-            OpenUrl(url);
+            if (url.Length < 2000) { OpenUrl(url); return; }
+            // Windows can cut long links short on their way to the browser, so a small page in
+            // the temp folder forwards the browser to the whole link instead.
+            try
+            {
+                string page = Path.Combine(Path.GetTempPath(), "DbScanner-open-calculator.html");
+                File.WriteAllText(page,
+                    "<!doctype html><meta charset=\"utf-8\"><title>DPS Calculator</title>" +
+                    "<script>location.replace(" + Json.Write(url, false) + ");</script>" +
+                    "<p style=\"font-family:sans-serif\">Opening the DPS Calculator… <a href=\"" + url + "\">Continue</a></p>",
+                    new UTF8Encoding(false));
+                OpenUrl(page);
+            }
+            catch (IOException) { OpenUrl(url); }
+            catch (UnauthorizedAccessException) { OpenUrl(url); }
         }
 
         void CopyScan()
