@@ -99,6 +99,10 @@ jobs:
           $lines | Out-Host
           $text = ($lines -join "`n").Replace("%", "%25").Replace("`r", "").Replace("`n", "%0A")
           Write-Host "::notice title=Windows OCR check::$text"
+          # The full output is cut short in an annotation, so the result, failures and spell reads go in one of their own.
+          $short = $lines | Where-Object { $_ -match '^FAIL|passed, |spell|ability|Tome|Text recognition' }
+          $text = ($short -join "`n").Replace("%", "%25").Replace("`r", "").Replace("`n", "%0A")
+          Write-Host "::notice title=Windows OCR summary::$text"
           exit $code
 
       - uses: actions/upload-artifact@v4
