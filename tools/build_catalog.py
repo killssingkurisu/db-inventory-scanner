@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Build data/catalog.json, the scanner's list of every gear item and charm in Dungeon Blitz.
+"""Build data/catalog.json, the scanner's list of every gear item, charm and ability in Dungeon Blitz.
 
 Inputs are the game's own data files from the Dungeon Blitz: R client
-(src/client/content/localhost/p/...):
+(src/client/content/localhost/p/..., or the live server's /p/...):
   --login-swz  p/cbp/Login.swz     (GearTypes: every item's name, slot, rarity, stats and runes)
-  --game-swz   p/cbq/Game.en.swz   (CharmTypes with English names)
+  --game-swz   p/cbq/Game.swz      (CharmTypes with English names; AbilityTypes and PlayerPowerTypes)
   --game-tr    p/cbq/Game.tr.swz   (optional: Turkish charm names)
+
+Only abilities, into an existing catalog (keeps its gear and charms):
+  --abilities-swz p/cbq/Game.swz
 
 The .swz files are the client's packed XML (a rolling XOR key, then zlib per chunk).
 
@@ -108,17 +111,74 @@ def build(login_swz, game_swz, game_tr):
     return OrderedDict([("version", 1), ("gear", items), ("charms", charms)])
 
 
+CLASSES = {"Rogue": "Rogue", "Executioner": "Rogue", "Shadowwalker": "Rogue", "ShadowWalker": "Rogue", "Soulthief": "Rogue",
+           "Paladin": "Paladin", "Sentinel": "Paladin", "Justicar": "Paladin", "Templar": "Paladin",
+           "Mage": "Mage", "Frostwarden": "Mage", "Flameseer": "Mage", "Necromancer": "Mage"}
+
+
+def abilities(game_swz):
+    """Every class ability with each rank's power: what the Tome of Power and the hotbar show.
+
+    An ability's rank N is the player power named <AbilityName><N> (PoisonStrike10). Its
+    Description is the tooltip text, "[Stats: ...]" included, as the live client shows it.
+    """
+    chunks = swz_chunks(game_swz)
+    powers = {}
+    for pw in chunk(chunks, "PlayerPowerTypes"):
+        powers[pw.get("PowerName")] = pw
+    out = []
+    current = None
+    for ab in chunk(chunks, "AbilityTypes"):
+        name = ab.get("AbilityName")
+        if name:
+            current = None
+            cls = text(ab, "Class")
+            if name == "Template" or cls not in CLASSES:
+                continue
+            current = OrderedDict([
+                ("k", name), ("n", ""), ("c", cls), ("b", CLASSES[cls]), ("cat", text(ab, "Category")),
+                ("h", int(text(ab, "HotbarLocation") or 0)), ("max", int(text(ab, "Rank") or 1)), ("r", []),
+            ])
+            out.append(current)
+        elif current is not None:
+            current["max"] = max(current["max"], int(text(ab, "Rank") or 0))
+    for a in out:
+        for rank in range(1, a["max"] + 1):
+            pw = powers.get("%s%d" % (a["k"], rank))
+            if pw is None:
+                continue
+            if not a["n"]:
+                a["n"] = text(pw, "DisplayName")
+            mana = text(pw, "ManaCost")
+            a["r"].append([rank, int(text(pw, "PowerID") or 0), pw.get("PowerName"), mana if mana != "----" else "",
+                           int(float(text(pw, "CoolDownTime") or 0)), text(pw, "DamageType").replace("----", ""),
+                           text(pw, "Description").replace("----", "")])
+        if not a["n"]:
+            base = powers.get(a["k"])
+            a["n"] = text(base, "DisplayName") if base is not None else a["k"]
+    return [a for a in out if a["r"]]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--login-swz", required=True)
-    ap.add_argument("--game-swz", required=True)
+    ap.add_argument("--login-swz", default="")
+    ap.add_argument("--game-swz", default="")
     ap.add_argument("--game-tr", default="")
+    ap.add_argument("--abilities-swz", default="", help="only refresh the abilities of an existing catalog")
     ap.add_argument("--out", default="data/catalog.json")
     a = ap.parse_args()
-    cat = build(a.login_swz, a.game_swz, a.game_tr)
+    if a.abilities_swz:
+        with open(a.out, encoding="utf-8") as fh:
+            cat = json.load(fh, object_pairs_hook=OrderedDict)
+        cat["abilities"] = abilities(a.abilities_swz)
+    elif a.login_swz and a.game_swz:
+        cat = build(a.login_swz, a.game_swz, a.game_tr)
+        cat["abilities"] = abilities(a.game_swz)
+    else:
+        ap.error("give --login-swz and --game-swz, or --abilities-swz")
     with open(a.out, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(cat, fh, ensure_ascii=False, separators=(",", ":"))
-    print("wrote %s: %d gear, %d charms" % (a.out, len(cat["gear"]), len(cat["charms"])))
+    print("wrote %s: %d gear, %d charms, %d abilities" % (a.out, len(cat["gear"]), len(cat["charms"]), len(cat.get("abilities", []))))
 
 
 if __name__ == "__main__":

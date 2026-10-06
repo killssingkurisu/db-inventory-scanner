@@ -78,6 +78,37 @@ static class TestRunner
         Check("projector at 1152×768 window", Math.Round(GameGeometry.ForFlashArea(0, 0, 1152, 768).Scale, 4), 0.9219);
         Check("scale capped at 1.25 on a 4K window", GameGeometry.ForFlashArea(0, 0, 3840, 2100).Scale, 1.25);
 
+        // Scaled displays: Flash lays the game out in device-independent pixels. The user's 2560×1440
+        // screen at 150%: a maximized launcher has a 2560×1334 client area, a 1707×889 stage.
+        var dip = GameGeometry.ForFlashArea(0, 34, 2560, 1334, 1.5);
+        Check("150% scaling: scale", Math.Round(dip.Scale, 4), 1.6016);
+        Check("150% scaling: origin x", dip.OriginX, 357.0);
+        Check("150% scaling: origin y", dip.OriginY, 85.0);
+        Check("150% scaling comes first", Scanner.Candidates(new RectI(0, 34, 2560, 1334), null, 1.5)[0].Source, "window size at 150% scaling");
+        Check("100% has no scaled candidate", Scanner.Candidates(new RectI(0, 29, 1920, 991), null, 1.0)[0].Source, "window size");
+
+        // Abilities.
+        Check("catalog abilities", catalog.Abilities.Count > 100, true);
+        var ps = catalog.AbilityByKey("PoisonStrike");
+        Check("Poison Strike ranks", ps != null ? ps.Ranks.Count : 0, 10);
+        Check("Poison Strike rank 10 power", ps != null ? ps.RankInfo(10).PowerId : 0, 993);
+        Check("ability name", catalog.MatchAbility("Poison Strike", "Rogue").Item.Key, "PoisonStrike");
+        Check("ability name with OCR noise", catalog.MatchAbility("Poisoh Strlke", null).Item.Key, "PoisonStrike");
+        Check("discipline ability", catalog.MatchAbility("Charon's Blades", "Rogue").Item.Key, "SeekingBlades");
+        Check("rank line", SpellText.ParseRank("Rank 10        Mana Cost: 20"), 10);
+        Check("rank line with O for 0", SpellText.ParseRank("Rank lO"), 10);
+        Check("mana", SpellText.ParseMana("Rank 10        Mana Cost: 20"), "20");
+        Check("mana with semicolon", SpellText.ParseMana("Mana Cost; 35"), "35");
+        Check("no rank", SpellText.ParseRank("Master Ability"), -1);
+        Check("stats text", SpellText.StatsText(ps.RankInfo(10).Description), "1.49x attack, 2x Expertise/s (5s), -10% Speed (5s), -10% Melee Damage (5s)");
+        var terms = SpellText.Scaling(ps.RankInfo(10).Description);
+        Check("scaling terms", string.Join(" ", terms.Select(t => t.Multiplier + t.Stat + (t.PerSecond ? "/s" : "") + (t.Seconds > 0 ? "(" + t.Seconds + ")" : ""))), "1.49attack 2expertise/s(5)");
+        Check("next-rank stats ignored", SpellText.StatsText("x [Stats: 1x attack | Next rank: 1.1x attack]"), "1x attack");
+        int hiRank;
+        int loRank = Scanner.RankFromDescription(ps, "Deal two venomous strikes that Blind, Cripple, Weaken and apply a deadly poison to your foe [Stats: 1.49x attack, 2x Expertise/s (5s), -10% Speed (5s), -10%", out hiRank);
+        Check("ranks with the same tooltip text", loRank + "-" + hiRank, "8-10");
+        Check("rank 7's text is its own", Scanner.RankFromDescription(ps, "Deal two venomous strikes that Blind, Cripple, Weaken and apply a deadly poison to your foe [Stats: 1.33x attack, 2x Expertise/s (5s)"), 7);
+
         // Name matching.
         Check("exact name", catalog.MatchGear("Key to the City", "Rogue", null, "R").Item.Name, "Key to the City");
         Check("OCR noise", catalog.MatchGear("Key to the Clty ‘", null, null, null).Item.Name, "Key to the City");
@@ -162,6 +193,52 @@ static class TestRunner
         for (int i = 7; i <= 10; i++)
             Check("slot " + (i + 1) + (i < 9 ? " filled" : " empty"), Imaging.SlotEmpty(charmShot.Crop(g.ToScreen(UiLayout.GridIcon(i)))), i >= 9);
         Check("dark gear item is not empty", Imaging.SlotEmpty(gearShot.Crop(g.ToScreen(UiLayout.GridIcon(16)))), false);
+
+        // Spells: the ability tooltip and the Tome of Power, cut from 2560×1440 captures at 150%
+        // scaling that were saved at 1706×959, so the game is drawn at 1.0677 from (238, 57).
+        var dg = new GameGeometry { Scale = 1.06771, OriginX = 238 - 960, OriginY = 57 - 728 };
+        var tipShot = Load(Path.Combine(screens, "ability-tooltip.png"));
+        var spell = scanner.ReadAbilityFrom(tipShot, dg, "Rogue");
+        Check("ability tooltip found", spell != null, true);
+        if (spell != null)
+        {
+            Check("spell name", spell.Def != null ? spell.Def.Key : spell.OcrName, "PoisonStrike");
+            Check("spell rank from the tooltip", spell.Rank + (spell.RankFromText ? " (read)" : " (guessed)"), "10 (read)");
+            Check("spell mana cost", spell.ManaCost, "20");
+            Check("spell description read", Catalog.Normalize(spell.OcrDescription).Contains("venomous strikes"), true);
+            int hiRead;
+            int loRead = Scanner.RankFromDescription(spell.Def, spell.OcrDescription, out hiRead);
+            Check("ranks that fit the read description", loRead + "-" + hiRead, "8-10");
+        }
+        // The same tooltip at the size a 150% screen really captures it (scale 1.6016).
+        var bigTip = tipShot.Resize((int)Math.Round(tipShot.Width * 1.5), (int)Math.Round(tipShot.Height * 1.5));
+        var bigSpell = scanner.ReadAbilityFrom(bigTip, new GameGeometry { Scale = 1.06771 * 1.5, OriginX = (238 - 960) * 1.5, OriginY = (57 - 728) * 1.5 }, null);
+        Check("ability tooltip at full size", bigSpell != null && bigSpell.Def != null ? bigSpell.Def.Key + " " + bigSpell.Rank : "", "PoisonStrike 10");
+        Check("gear tooltip is not an ability tooltip", scanner.ReadAbilityFrom(gearShot, g, null) == null, true);
+
+        var tg = new GameGeometry { Scale = 1.06771, OriginX = 238 - 330, OriginY = 57 - 165 };
+        var classPage = Load(Path.Combine(screens, "tome-page-class.png"));
+        var discPage = Load(Path.Combine(screens, "tome-page-discipline.png"));
+        string emptyClass = string.Join(",", Enumerable.Range(0, 12).Where(i => scanner.TomeSlotEmptyFrom(classPage, tg, i)).Select(i => (i + 1).ToString()));
+        string emptyDisc = string.Join(",", Enumerable.Range(0, 12).Where(i => scanner.TomeSlotEmptyFrom(discPage, tg, i)).Select(i => (i + 1).ToString()));
+        Check("class page: empty Tome slots", emptyClass, "4,8,12");
+        Check("discipline page: empty Tome slots", emptyDisc, "3,4,7,8,11,12");
+
+        var spells = new ScanResult { CharacterName = "ksq", Class = "Rogue", SpellsScanned = true, TomeRead = true };
+        if (spell != null && spell.Def != null)
+        {
+            spell.Page = 0; spell.Slot = 0; spell.PageName = "Rogue"; spell.HotbarKey = "1"; spell.HotbarSlot = 1;
+            spells.Spells.Add(spell);
+            spells.Hotbar.Add(spell);
+        }
+        var sj = (Dictionary<string, object>)Json.Parse(Json.Write(spells.ToSpellsJson("test"), true));
+        Check("spells format", sj["format"], "dbb-spells");
+        var sa = (Dictionary<string, object>)((List<object>)((Dictionary<string, object>)sj["spells"])["abilities"])[0];
+        Check("spell export", sa["key"] + " r" + sa["rank"] + " " + sa["equipped"] + " p" + ((Dictionary<string, object>)sa["tome"])["page"] + " t" + ((Dictionary<string, object>)sa["tome"])["tier"], "PoisonStrike r10 1 p1 t1");
+        Check("spell export scaling", sa["scalingText"], "1.49x attack, 2x Expertise/s (5s), -10% Speed (5s), -10% Melee Damage (5s)");
+        Check("spell export power", sa["powerId"] + " " + sa["manaCost"], "993 20");
+        var hb = (Dictionary<string, object>)((List<object>)((Dictionary<string, object>)sj["spells"])["hotbar"])[0];
+        Check("hotbar export", hb["slotKey"] + " " + hb["key"], "1 PoisonStrike");
 
         // The export.
         var res = new ScanResult { CharacterName = "ksq", Class = "Rogue" };

@@ -68,6 +68,25 @@ namespace DbScanner.Core
             };
         }
 
+        /// <summary>
+        /// The game's layout on a scaled display. Flash sizes its stage in device-independent
+        /// pixels (a 2560×1334 window at 150% is a 1707×889 stage), lays the game out there, and the
+        /// screen shows that enlarged by the scaling, so the 1.25 cap and the 6 px rounding apply
+        /// before the enlargement. `dpi` is the scaling as a factor (1.5 for 150%).
+        /// </summary>
+        public static GameGeometry ForFlashArea(int left, int top, int w, int h, double dpi)
+        {
+            if (dpi < 1.01) return ForFlashArea(left, top, w, h);
+            var g = ForFlashArea(0, 0, (int)Math.Round(w / dpi), (int)Math.Round(h / dpi));
+            return new GameGeometry
+            {
+                Scale = g.Scale * dpi,
+                OriginX = left + g.OriginX * dpi,
+                OriginY = top + g.OriginY * dpi,
+                Source = "window size at " + Math.Round(dpi * 100) + "% scaling"
+            };
+        }
+
         /// <summary>Geometry from the game's drawn rectangle, found on screen.</summary>
         public static GameGeometry ForDrawnRect(RectI r)
         {

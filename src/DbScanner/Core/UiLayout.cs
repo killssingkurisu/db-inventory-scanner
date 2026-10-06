@@ -128,6 +128,74 @@ namespace DbScanner.Core
             };
         }
 
+        /* ---------- Tome of Power (a_ScreenTome in UI_4.swf) ---------- */
+
+        public const int TomeTabs = 5;
+        public const int TomeColumns = 4;
+        public const int TomeSlots = 12;
+
+        /// <summary>The page tabs down the book's left edge: the class page, the three disciplines, and the master page at the bottom.</summary>
+        public static RectD TomeTab(int i)
+        {
+            double y = i < 4 ? 111.8 + 66.03 * i : 436.9;
+            return new RectD(91.0, y, 160.7, y + 68.0);
+        }
+
+        /// <summary>Ability slot i of the open page: four columns, one row per tier.</summary>
+        public static RectD TomeSlot(int i)
+        {
+            int c = i % TomeColumns, r = i / TomeColumns;
+            double x = 207.7 + 77.0 * c;
+            double y = r == 0 ? 175.0 : r == 1 ? 305.0 : 445.0;
+            return new RectD(x, y, x + 76.5, y + 76.6);
+        }
+
+        /// <summary>The middle of a slot, where the ability's icon is drawn.</summary>
+        public static RectD TomeSlotIcon(int i)
+        {
+            RectD s = TomeSlot(i);
+            return new RectD(s.X0 + 14, s.Y0 + 14, s.X1 - 14, s.Y1 - 22);
+        }
+
+        public static readonly RectD TomeExit = new RectD(991.6, 91.4, 1023.3, 121.7);
+        /// <summary>Plain parchment under the third tier: somewhere to rest the mouse that shows no tooltip.</summary>
+        public static readonly PointD TomePark = new PointD(380, 585);
+
+        /* ---------- the hotbar (a_Hud, am_PowerButtons) ---------- */
+
+        /// <summary>The six ability buttons, keys 1, 2, 3, 4, E and Q by default.</summary>
+        public static RectD HotbarKey(int i)
+        {
+            double x = 100.0 + 54.5 * i;
+            return new RectD(x, 702.9, x + 56.3, 759.2);
+        }
+
+        public static readonly string[] HotbarLabels = { "1", "2", "3", "4", "E", "Q" };
+
+        /* ---------- ability tooltip (am_HudPowerDetails: the Tome and the hotbar show the same one) ---------- */
+
+        public static readonly RectD AbilityTip = new RectD(683.4, 635.4, 1119.3, 759.4);
+        public static readonly RectD AbilityTipName = new RectD(694.6, 645.6, 1109.0, 670.9);
+        /// <summary>"Rank 10" on the left, "Mana Cost: 20" on the right.</summary>
+        public static readonly RectD AbilityTipType = new RectD(694.6, 667.5, 1105.6, 690.4);
+        /// <summary>The description's three visible lines; the box cuts off anything longer.</summary>
+        public static readonly RectD[] AbilityTipDesc =
+        {
+            new RectD(694.6, 690.6, 1105.0, 709.4),
+            new RectD(694.6, 709.0, 1105.0, 727.0),
+            new RectD(694.6, 726.6, 1105.0, 745.0)
+        };
+
+        /// <summary>Points inside the ability tooltip's frame that its text never reaches.</summary>
+        public static PointD[] AbilityTipBackground()
+        {
+            return new[]
+            {
+                new PointD(1110, 652), new PointD(1110, 700), new PointD(1110, 720), new PointD(1110, 740),
+                new PointD(690, 655), new PointD(690, 700), new PointD(690, 738)
+            };
+        }
+
         /// <summary>The tooltips' dark fill, (38, 32, 1).</summary>
         public static readonly int[] TipFill = { 38, 32, 1 };
 
