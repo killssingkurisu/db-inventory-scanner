@@ -6,9 +6,10 @@ A damage meter for the Dungeon Blitz: R launcher. It sits in the grey space to t
 - total damage, damage per second, casts, hits and crit rate, with a DPS line for the last minute;
 - **Scaling**: how much of your damage scales with Attack and how much with Expertise, how much came over time (DoTs) and from crits. A direct hit counts for the stat in its spell's Stats line ("1.49x attack"); every damage-over-time tick counts for Expertise, because the game puts your Expertise into each DoT when it lands (poison, bleed, burn, whichever spell applied it);
 - **Spells**: your equipped spells in hotbar order (1, 2, 3, 4, E, Q), each with its rank, share of your damage, casts, and on a click its DPS, hits, crit rate, average and biggest hit, DoT damage and its Stats line. Basic attacks, rune procs and pets are listed under *Other damage*;
-- **Export…** to a JSON file (everything, every hit) or a CSV table for spreadsheets, and **Copy summary** for chat.
+- **Rotation**: a thin strip between the game and the Spells panel with every cast in the order it went out, repeats included: the hotbar key (1, 2, 3, 4, E, Q) and the damage that cast did, its DoT ticks included as they land (cyan when it crit). Basic attacks show as **M** (melee) or **R** (ranged), a pause of 1.5 s or more as a gap, and the full spell name and numbers on hover;
+- **Export…** to a JSON file in the GO style (everything: spells, the rotation, every hit) or a CSV table for spreadsheets, and **Copy summary** for chat.
 
-Hits and casts only count while the timer runs. Turn on *Start on first hit* to start it with your first hit instead.
+Hits and casts only count while the timer runs. Turn on *Start on first hit* to start it with your first hit instead. F8 (or ×) hides the panels and leaves a small *Damage meter* tab in the top-left corner of the grey area to bring them back.
 
 ## Install
 
@@ -44,7 +45,19 @@ Set `DUNGEON_BLITZ_DPS=0` in the environment to start the launcher without the m
 
 ## Export format
 
-`format: "dbb-dps"`, version 1: `character`, `levels`, `timer` (`elapsedMs`, `startedAt`, `stoppedAt`), `totals` (`damage`, `dps`, `casts`, `hits`, `crits`, `critRate`, `critDamage`, `dotDamage`, `summonDamage`), `distribution` (`byStat` attack/expertise/unknown, `byKind` direct/dot, `crits`), `spells[]` (per spell: `casts`, `hits`, `crits`, `damage`, `share`, `dps`, `directDamage`, `dotDamage`, `averageHit`, `biggestHit`, `damageByStat`, `scaling`, `rank`, `hotbarKey`, `powerIds`), `targets[]`, `damagePerSecond[]` (one entry per second of the timer), `hits[]` (`[ms, powerId, damage, crit, kind, target, summon]`), `outsideTimer`, `spellScan`.
+The JSON export is laid out the way GOOD (the Genshin Open Object Description that Genshin Optimizer imports) lays out an inventory: a header, then flat lists of objects that name things by the game's own keys.
+
+`format: "dbb-dps"`, `version: 2`, `source`, `exportedAt`, then:
+
+- `character`: `key`, `name`, `class`, `spellScan` (the scan file the hotbar came from).
+- `fight`: `startedAt`, `stoppedAt`, `durationMs`, `duration`, `levels`, `damage`, `dps`, `casts`, `hits`, `crits`, `critRate`, `critDamage`, `dotDamage`, `dotTicks`, `summonDamage`, `outsideTimer`.
+- `distribution`: `byStat` (attack, expertise, unknown), `byKind` (direct, dot), `crits`, each with `damage` and `share`.
+- `spells[]`: `key` (the ability, e.g. `PoisonStrike`, or the power's base name for basic attacks and procs, e.g. `RapierMelee`), `name`, `rank`, `slotKey` (hotbar key), `equipped`, `casts`, `hits`, `crits`, `critRate`, `damage`, `share`, `dps`, `directDamage`, `dotDamage`, `dotTicks`, `averageHit`, `biggestHit`, `damageByStat`, `scaling`, `powerIds`.
+- `rotation.steps[]`: the casts in order as DPS Calculator combo steps: ability keys, and `"basic"` for a basic attack.
+- `rotation.casts[]`: the same casts with `index`, `atMs`, `at`, `key`, `name`, `kind` (`spell`, `melee`, `ranged`, `other`), `slotKey` (`1`…`Q`, `M`, `R`), `rank`, `powerId`, `damage`, `directDamage`, `dotDamage`, `dotTicks`, `hits`, `crits`. A cast is credited with its power's hits and DoT ticks until that power is cast again.
+- `targets[]`, `damagePerSecond[]` (one entry per second of the timer), `hits[]` (`atMs`, `powerId`, `damage`, `crit`, `kind`, `target`, `summon`), `notes`.
+
+The CSV has the spell table, the fight totals and the rotation, one cast per row.
 
 ## Checks
 

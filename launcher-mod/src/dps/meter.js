@@ -12,7 +12,29 @@ const { EventEmitter } = require('events');
  */
 
 const MAX_HITS_LOGGED = 50000;
+const MAX_ROTATION = 20000;
+const ROTATION_SHOWN = 160;
+/** How long after a cast its power's hits and DoT ticks still count toward that cast. */
+const CAST_WINDOW_MS = 60000;
 const STATS = ['attack', 'expertise', 'unknown'];
+
+/** Up to two capitals of a name, for a power that has no hotbar key: "Poison Strike" -> "PS". */
+function initials(label) {
+    const words = String(label || '').replace(/[^A-Za-z0-9 ]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return '?';
+    if (words.length === 1) return words[0].slice(0, 2);
+    return (words[0][0] + words[1][0]).toUpperCase();
+}
+
+/**
+ * A basic attack power: no hotbar ability, no mana cost (ManaCost "0,5": costs 0, gives 5), and
+ * not a gear or rune proc. Used when the cast packet carries no combo field.
+ */
+function isBasicPower(p) {
+    if (!p || p.monster || (p.ability && p.ability[2] > 0)) return false;
+    if (/^(Legendary|Mystic|Rune)/.test(p.name)) return false;
+    return /^0(,|$)/.test(String(p.mana || '').trim());
+}
 
 function emptyStats() {
     return { attack: 0, expertise: 0, unknown: 0 };
@@ -112,6 +134,9 @@ class DpsMeter extends EventEmitter {
         this.byStat = emptyStats();
         this.ignored = { hits: 0, damage: 0, casts: 0 };
         this.levels = [];
+        this.rotation = []; // every cast, in order: see recordCast
+        this.rotationSeq = 0;
+        this.lastCast = new Map(); // powerId -> its latest rotation entry
         this.emit('change');
     }
 
@@ -228,10 +253,39 @@ class DpsMeter extends EventEmitter {
         if (this.hitsLog.length < MAX_HITS_LOGGED) {
             this.hitsLog.push([Math.round(t), powerId, amount, crit ? 1 : 0, kind === 'dot' ? 'dot' : 'hit', name, summon ? summon.name : '']);
         }
+
+        // The cast this hit or tick belongs to: the latest cast of the same power. A recast
+        // refreshes a DoT, so later ticks go to the newer cast.
+        const entry = summon ? null : this.lastCast.get(powerId);
+        if (entry && t - entry.t <= CAST_WINDOW_MS) {
+            entry.damage += amount;
+            if (kind === 'dot') {
+                entry.dotDamage += amount;
+                entry.dotTicks += 1;
+            } else {
+                entry.hits += 1;
+                entry.hitDamage += amount;
+                if (crit) entry.crits += 1;
+            }
+        }
         this.emit('change');
     }
 
-    recordCast({ powerId }) {
+    /** What a cast was: a hotbar 'spell', a basic attack ('melee' or 'ranged'), or 'other'. */
+    castKind(powerId, combo, projectile) {
+        const p = this.powers ? this.powers.get(powerId) : null;
+        if (p && p.ability && p.ability[2] > 0) return 'spell';
+        // The client marks each step of a basic attack chain (meleeCombo / rangedCombo).
+        if (combo) return combo.isMelee ? 'melee' : 'ranged';
+        if (isBasicPower(p)) return /melee/i.test(p.name) || !projectile ? 'melee' : 'ranged';
+        return 'other';
+    }
+
+    /**
+     * A cast by the player (packet 0x09). combo: the cast's basic-attack combo field, if any;
+     * projectile: whether it fired a projectile.
+     */
+    recordCast({ powerId, combo, projectile }) {
         // A cast alone never starts the clock (auto-start waits for the first hit).
         if (this._state !== 'running') {
             this.ignored.casts += 1;
@@ -240,7 +294,66 @@ class DpsMeter extends EventEmitter {
         const row = this.rowFor(powerId, '');
         row.casts += 1;
         this.totals.casts += 1;
+        const p = this.powers ? this.powers.get(powerId) : null;
+        const entry = {
+            id: ++this.rotationSeq,
+            t: Math.round(this.elapsedMs()),
+            powerId,
+            kind: this.castKind(powerId, combo, projectile),
+            key: row.key,
+            group: p && p.group ? p.group : '',
+            label: row.label,
+            rank: p && p.rank ? p.rank : 0,
+            hits: 0,
+            crits: 0,
+            hitDamage: 0,
+            dotDamage: 0,
+            dotTicks: 0,
+            damage: 0
+        };
+        this.rotation.push(entry);
+        if (this.rotation.length > MAX_ROTATION) this.rotation.shift();
+        this.lastCast.set(powerId, entry);
         this.emit('change');
+    }
+
+    /** The key a rotation entry shows: the hotbar key, M or R for basic attacks, or initials. */
+    badge(entry, hotkeys) {
+        if (entry.kind === 'melee') return 'M';
+        if (entry.kind === 'ranged') return 'R';
+        return hotkeys.get(entry.key) || initials(entry.label);
+    }
+
+    /** Rotation entries worth showing: spells and basic attacks always, anything else once it deals damage. */
+    rotationEntries() {
+        return this.rotation.filter((e) => e.kind !== 'other' || e.damage > 0);
+    }
+
+    rotationView(limit) {
+        const hotkeys = new Map(this.equipped.map((e) => [e.group, e.key]));
+        const list = this.rotationEntries();
+        const shown = limit ? list.slice(-limit) : list;
+        return {
+            count: list.length,
+            entries: shown.map((e) => ({
+                id: e.id,
+                t: e.t,
+                badge: this.badge(e, hotkeys),
+                kind: e.kind,
+                key: e.key,
+                group: e.group,
+                label: e.label,
+                rank: e.rank,
+                powerId: e.powerId,
+                slotKey: e.kind === 'melee' ? 'M' : e.kind === 'ranged' ? 'R' : hotkeys.get(e.key) || '',
+                damage: e.damage,
+                hitDamage: e.hitDamage,
+                dotDamage: e.dotDamage,
+                dotTicks: e.dotTicks,
+                hits: e.hits,
+                crits: e.crits
+            }))
+        };
     }
 
     noteLevel(level) {
@@ -278,6 +391,7 @@ class DpsMeter extends EventEmitter {
             description: scan && scan.description ? scan.description : p ? p.description : '',
             damageType: p ? p.damageType : '',
             powerIds: Array.from(row.powerIds),
+            powerKey: p ? p.group || String(p.name || '').replace(/\d+$/, '') : '',
             summon: row.summon,
             monster: row.monster,
             hotkey: '',
@@ -330,7 +444,8 @@ class DpsMeter extends EventEmitter {
             others,
             timeline: this.timeline.slice(Math.max(0, last - 60)),
             timelineStart: Math.max(0, last - 60),
-            levels: this.levels.slice()
+            levels: this.levels.slice(),
+            rotation: this.rotationView(ROTATION_SHOWN)
         };
     }
 
@@ -344,9 +459,10 @@ class DpsMeter extends EventEmitter {
             targets: Array.from(this.targets.values()).sort((a, b) => b.damage - a.damage),
             timeline: this.timeline.slice(),
             hits: this.hitsLog.slice(),
+            rotation: this.rotationView(0).entries,
             stoppedAt: this.stoppedAt
         };
     }
 }
 
-module.exports = { DpsMeter };
+module.exports = { DpsMeter, initials, isBasicPower };

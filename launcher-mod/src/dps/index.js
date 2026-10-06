@@ -14,7 +14,7 @@ const { PowerTable, dataFromSwz } = require('./powers');
 const { SpellScanStore } = require('./spellScans');
 const exporter = require('./exporter');
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const SOURCE = 'DB DPS Overlay ' + VERSION;
 const PORT_BASE = 47690;
 const PORT_LAST = 47890;
@@ -576,8 +576,8 @@ class DpsOverlay {
             title: 'Export DPS results',
             defaultPath: path.join(folder, base + '.json'),
             filters: [
-                { name: 'Everything (JSON)', extensions: ['json'] },
-                { name: 'Spell table (CSV, for spreadsheets)', extensions: ['csv'] }
+                { name: 'Everything, GO-style JSON (dbb-dps v2)', extensions: ['json'] },
+                { name: 'Spell table and rotation (CSV, for spreadsheets)', extensions: ['csv'] }
             ]
         });
         if (result.canceled || !result.filePath) {

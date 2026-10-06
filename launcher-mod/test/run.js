@@ -348,21 +348,63 @@ async function main() {
         m.stop();
         const meta = { source: 'test', character: 'ksq', className: 'Rogue' };
         const j = exporter.toJson(m.report(), meta);
-        assert.strictEqual(j.format, 'dbb-dps');
-        assert.strictEqual(j.totals.damage, 4000);
-        assert.strictEqual(j.totals.dps, 400);
-        assert.strictEqual(j.totals.casts, 2);
+        assert.deepStrictEqual([j.format, j.version, j.source], ['dbb-dps', 2, 'test']);
+        assert.strictEqual(j.fight.damage, 4000);
+        assert.strictEqual(j.fight.dps, 400);
+        assert.strictEqual(j.fight.casts, 2);
+        assert.strictEqual(j.fight.duration, '0:10.0');
+        assert.strictEqual(j.spells[0].key, 'PoisonStrike');
         assert.strictEqual(j.spells[0].casts, 2);
         assert.strictEqual(j.distribution.byStat.attack.share, 0.75);
         assert.strictEqual(j.distribution.byKind.dot.damage, 1000);
-        assert.strictEqual(j.hits.length, 2);
-        assert.strictEqual(j.timer.elapsed, '0:10.0');
+        assert.deepStrictEqual(j.hits[0], { atMs: 0, powerId: 993, damage: 3000, crit: true, kind: 'hit', target: 'Goblin', summon: null });
+        assert.deepStrictEqual(j.rotation.steps, ['PoisonStrike', 'PoisonStrike']);
+        assert.strictEqual(j.rotation.casts[1].damage, 4000, 'both hits and the tick go to the latest cast of the power');
         const csv = exporter.toCsv(m.report(), meta).split('\r\n');
         assert.ok(csv[0].startsWith('Spell,Rank,Hotbar key,Casts'));
         assert.ok(csv[1].startsWith('Poison Strike,10,,2,1,1,100,4000,100,400'), csv[1]);
         const sum = exporter.toSummary(m.report(), meta);
         assert.ok(sum.includes('400 DPS, 4,000 damage, 2 casts, 1 hits (100% crit)'), sum);
         assert.ok(sum.includes('1. Poison Strike r10: 4,000 (100%), 2 casts'), sum);
+        assert.ok(sum.includes('Rotation: PoisonStrike PoisonStrike'), sum);
+    });
+
+    await check('rotation: casts in order, basic attacks as M and R, damage and DoTs per cast', () => {
+        let now = 0;
+        const m = new DpsMeter({ powers: table, now: () => now });
+        m.setSpellScan({ abilities: [{ key: 'PoisonStrike', rank: 10 }], hotbar: [{ key: 'PoisonStrike', slotKey: '1', name: 'Poison Strike', rank: 10 }] });
+        m.start();
+        m.recordCast({ powerId: 3, combo: { isMelee: true, id: 1 } });
+        m.recordDamage({ kind: 'hit', powerId: 3, damage: 100 });
+        now = 400;
+        m.recordCast({ powerId: 3, combo: { isMelee: true, id: 2 } });
+        m.recordDamage({ kind: 'hit', powerId: 3, damage: 120, crit: true });
+        now = 900;
+        m.recordCast({ powerId: 993 });
+        m.recordDamage({ kind: 'hit', powerId: 993, damage: 3000 });
+        m.recordDamage({ kind: 'hit', powerId: 993, damage: 3100 });
+        now = 1900;
+        m.recordDamage({ kind: 'dot', powerId: 993, damage: 500 });
+        m.recordCast({ powerId: 3 }); // no combo field: still a basic attack by its power
+        m.recordCast({ powerId: 3, combo: { isMelee: false, id: 1 } }); // a ranged chain step
+        m.recordCast({ powerId: 4000 }); // a monster power that does nothing: not listed
+        now = 2600;
+        m.recordCast({ powerId: 993 });
+        m.recordDamage({ kind: 'dot', powerId: 993, damage: 600 }); // after the recast: the new cast's
+        const r = m.snapshot().rotation;
+        assert.strictEqual(r.count, 6);
+        assert.deepStrictEqual(r.entries.map((e) => e.badge), ['M', 'M', '1', 'M', 'R', '1']);
+        assert.deepStrictEqual(r.entries.map((e) => e.damage), [100, 120, 6600, 0, 0, 600]);
+        assert.deepStrictEqual([r.entries[2].hits, r.entries[2].dotDamage, r.entries[1].crits], [2, 500, 1]);
+        assert.deepStrictEqual(r.entries.map((e) => e.t), [0, 400, 900, 1900, 1900, 2600]);
+        const j = exporter.toJson(m.report(), { source: 't' });
+        assert.deepStrictEqual(j.rotation.steps, ['basic', 'basic', 'PoisonStrike', 'basic', 'basic', 'PoisonStrike']);
+        assert.deepStrictEqual(j.rotation.casts.map((c) => c.slotKey), ['M', 'M', '1', 'M', 'R', '1']);
+        const csv = exporter.toCsv(m.report(), { character: 'ksq' });
+        assert.ok(csv.includes('\r\nRotation,Time (s),Key,Spell,Kind,Damage'), csv);
+        assert.ok(csv.includes('\r\n3,0.9,1,Poison Strike,spell,6600,6100,500,2,0\r\n'), csv);
+        m.reset();
+        assert.strictEqual(m.snapshot().rotation.count, 0);
     });
 
     console.log('Spell scans');

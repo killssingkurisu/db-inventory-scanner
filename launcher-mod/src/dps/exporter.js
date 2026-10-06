@@ -24,14 +24,27 @@ function int(n) {
     return Math.round(Number(n) || 0).toLocaleString('en-US');
 }
 
+/**
+ * The key a spell goes by in the export, in the game's own vocabulary (the DPS Calculator's too):
+ * the ability for hotbar spells ("PoisonStrike"), the power's base name for everything else
+ * ("RapierMelee"), the summon's name for pets.
+ */
+function spellKey(r) {
+    if (r.equipped || (r.key && !/^(name|summon|power):/.test(r.key))) return r.key;
+    if (r.powerKey) return r.powerKey;
+    if (/^summon:/.test(r.key)) return r.key.slice(7).replace(/[^A-Za-z0-9]+/g, '');
+    return r.key.replace(/^(name|power):/, '').replace(/[^A-Za-z0-9]+/g, '');
+}
+
 function spellRow(r) {
     return {
-        spell: r.label,
-        key: r.key,
+        key: spellKey(r),
+        name: r.label,
         rank: r.rank || null,
         ranksSeen: r.ranks,
-        hotbarKey: r.hotkey || null,
+        slotKey: r.hotkey || null,
         equipped: r.equipped,
+        summon: r.summon || false,
         casts: r.casts,
         hits: r.hits,
         crits: r.crits,
@@ -53,24 +66,61 @@ function spellRow(r) {
     };
 }
 
+/** A rotation step in the DPS Calculator's combo vocabulary: an ability key, or "basic". */
+function stepKey(e) {
+    if (e.kind === 'melee' || e.kind === 'ranged') return 'basic';
+    return e.group || e.label.replace(/[^A-Za-z0-9]+/g, '');
+}
+
+function rotationCast(e, i) {
+    return {
+        index: i + 1,
+        atMs: e.t,
+        at: clock(e.t),
+        key: e.kind === 'melee' || e.kind === 'ranged' ? 'basic' : stepKey(e),
+        name: e.label,
+        kind: e.kind,
+        slotKey: e.slotKey || null,
+        rank: e.rank || null,
+        powerId: e.powerId,
+        damage: e.damage,
+        directDamage: e.hitDamage,
+        dotDamage: e.dotDamage,
+        dotTicks: e.dotTicks,
+        hits: e.hits,
+        crits: e.crits
+    };
+}
+
+/**
+ * The fight as one JSON document, laid out the way GOOD (Genshin Open Object Description, the
+ * format Genshin Optimizer imports) lays out an inventory: a format/version/source header, then
+ * flat lists of objects that name things by the game's own keys, with slotKey for where a spell
+ * sits on the hotbar. format "dbb-dps", version 2.
+ */
 function toJson(report, meta) {
     const s = report.snapshot;
     const total = s.totals.damage;
+    const rotation = report.rotation || [];
+    const share = (n) => (total ? round(n / total, 4) : 0);
     return {
         format: 'dbb-dps',
-        version: 1,
+        version: 2,
         source: meta.source,
         exportedAt: new Date().toISOString(),
-        character: { name: meta.character || '', class: meta.className || '' },
-        levels: s.levels,
-        timer: {
+        character: {
+            key: (meta.character || '').replace(/\s+/g, ''),
+            name: meta.character || '',
+            class: meta.className || '',
+            spellScan: meta.scan || null
+        },
+        fight: {
             state: s.state,
             startedAt: s.startedAt || null,
             stoppedAt: report.stoppedAt || null,
-            elapsedMs: Math.round(s.elapsedMs),
-            elapsed: clock(s.elapsedMs)
-        },
-        totals: {
+            durationMs: Math.round(s.elapsedMs),
+            duration: clock(s.elapsedMs),
+            levels: s.levels,
             damage: total,
             dps: round(s.dps, 1),
             casts: s.totals.casts,
@@ -80,35 +130,33 @@ function toJson(report, meta) {
             critDamage: s.totals.critDamage,
             dotDamage: s.totals.dotDamage,
             dotTicks: s.totals.dotTicks,
-            summonDamage: s.totals.summonDamage
+            summonDamage: s.totals.summonDamage,
+            outsideTimer: s.ignored
         },
         distribution: {
             byStat: {
-                attack: { damage: s.byStat.attack, share: total ? round(s.byStat.attack / total, 4) : 0 },
-                expertise: { damage: s.byStat.expertise, share: total ? round(s.byStat.expertise / total, 4) : 0 },
-                unknown: { damage: s.byStat.unknown, share: total ? round(s.byStat.unknown / total, 4) : 0 }
+                attack: { damage: s.byStat.attack, share: share(s.byStat.attack) },
+                expertise: { damage: s.byStat.expertise, share: share(s.byStat.expertise) },
+                unknown: { damage: s.byStat.unknown, share: share(s.byStat.unknown) }
             },
             byKind: {
-                direct: { damage: total - s.totals.dotDamage, share: total ? round((total - s.totals.dotDamage) / total, 4) : 0 },
-                dot: { damage: s.totals.dotDamage, share: total ? round(s.totals.dotDamage / total, 4) : 0 }
+                direct: { damage: total - s.totals.dotDamage, share: share(total - s.totals.dotDamage) },
+                dot: { damage: s.totals.dotDamage, share: share(s.totals.dotDamage) }
             },
-            crits: {
-                critDamage: s.totals.critDamage,
-                share: total ? round(s.totals.critDamage / total, 4) : 0,
-                rate: round(s.critRate, 4)
-            }
+            crits: { damage: s.totals.critDamage, share: share(s.totals.critDamage), rate: round(s.critRate, 4) }
         },
         spells: report.rows.map(spellRow),
-        targets: report.targets,
+        rotation: {
+            steps: rotation.map(stepKey),
+            casts: rotation.map(rotationCast)
+        },
+        targets: report.targets.map((t) => ({ name: t.name, damage: t.damage, hits: t.hits, share: share(t.damage) })),
         damagePerSecond: report.timeline,
-        hitsColumns: ['ms', 'powerId', 'damage', 'crit', 'kind', 'target', 'summon'],
-        hits: report.hits,
-        outsideTimer: s.ignored,
-        spellScan: meta.scan || null,
+        hits: report.hits.map((h) => ({ atMs: h[0], powerId: h[1], damage: h[2], crit: Boolean(h[3]), kind: h[4], target: h[5], summon: h[6] || null })),
         notes: [
-            'Damage is what your game client sent to the server for each hit (packet 0x0A) and DoT tick (packet 0x79). The server can add to it afterwards (the Soulthief passive, admin damage scaling), which is not included.',
-            'Casts count packet 0x09 from your character. Hits and casts while the timer was stopped are not counted (see outsideTimer).',
-            'Scaling: a direct hit counts toward the stat its power scales with ("1.49x attack"), a DoT tick toward its per-second stat ("2x Expertise/s").'
+            'Damage is what your game client sent to the server for each hit (packet 0x0A) and DoT tick (packet 0x79), including DoT ticks on the house training dummies, which the meter reads but never forwards. The server can add to it afterwards (the Soulthief passive, admin damage scaling), which is not included.',
+            'rotation.casts lists every cast (packet 0x09) in order while the timer ran: hotbar spells, basic attacks (kind melee or ranged, key "basic") and any other power that dealt damage. Each cast is credited with the hits and DoT ticks of its power until that power is cast again. rotation.steps is the same order as DPS Calculator combo steps.',
+            'Scaling: a direct hit counts toward the stat in its spell\'s Stats line ("1.49x attack"); every DoT tick counts toward Expertise, which the game puts into each DoT when it lands.'
         ]
     };
 }
@@ -143,6 +191,14 @@ function toCsv(report, meta) {
     row(['Expertise-scaled damage', s.byStat.expertise]);
     row(['Unclassified damage', s.byStat.unknown]);
     row(['Exported', new Date().toISOString()]);
+    const rotation = report.rotation || [];
+    if (rotation.length) {
+        lines.push('');
+        row(['Rotation', 'Time (s)', 'Key', 'Spell', 'Kind', 'Damage', 'Direct damage', 'DoT damage', 'Hits', 'Crits']);
+        rotation.forEach((e, i) => {
+            row([i + 1, round(e.t / 1000, 2), e.slotKey || '', e.label, e.kind, e.damage, e.hitDamage, e.dotDamage, e.hits, e.crits]);
+        });
+    }
     return lines.join('\r\n') + '\r\n';
 }
 
@@ -164,7 +220,12 @@ function toSummary(report, meta) {
         );
         if (i >= 10) break;
     }
+    const rotation = report.rotation || [];
+    if (rotation.length) {
+        const keys = rotation.slice(0, 60).map((e) => (e.kind === 'melee' ? 'M' : e.kind === 'ranged' ? 'R' : e.slotKey || stepKey(e)));
+        out.push('Rotation: ' + keys.join(' ') + (rotation.length > 60 ? ' … (' + rotation.length + ' casts)' : ''));
+    }
     return out.join('\n');
 }
 
-module.exports = { toJson, toCsv, toSummary, clock };
+module.exports = { toJson, toCsv, toSummary, clock, stepKey };

@@ -16,6 +16,9 @@ const path = require('path');
 
 const SIDE_MIN = 150; // narrowest gutter that still takes a panel, in CSS px
 const SIDE_MAX = 300;
+const ROT_W = 60; // the Rotation strip beside the Spells panel
+const ROT_GAP = 5;
+const SPELLS_NARROW = 150; // below this the Spells rows stack their numbers
 
 const CSS = `
 #dbdps {
@@ -118,12 +121,12 @@ const CSS = `
 #dbdps .spell .more { display: grid; grid-template-columns: 1fr auto; gap: 0.1em 0.6em; font-size: 0.86em; padding-top: 0.25em; }
 #dbdps .spell .more dt { color: var(--parch-dim); }
 #dbdps .spell .more dd { text-align: right; }
-#dbdps .spell .more .desc { grid-column: 1 / -1; color: var(--parch-dim); font-style: italic; padding-top: 0.2em; }
+#dbdps .spell .more .desc { grid-column: 1 / -1; color: var(--parch-dim); font-style: italic; padding-top: 0.2em; text-align: left; }
 #dbdps .empty { color: var(--parch-dim); font-size: 0.92em; padding: 0.3em 0.1em; }
 #dbdps .reveal {
-  all: unset; pointer-events: auto; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
-  writing-mode: vertical-rl; padding: 0.7em 0.3em; cursor: pointer; font-weight: 700; font-size: 0.9em;
-  background: var(--ink); color: var(--parch-dim); border: 1px solid var(--brass-dim); border-left: 0; border-radius: 0 4px 4px 0;
+  all: unset; pointer-events: auto; position: absolute; left: 8px; top: 8px; box-sizing: border-box;
+  padding: 0.4em 0.75em; cursor: pointer; font-weight: 700; font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background: var(--ink); color: var(--parch-dim); border: 1px solid var(--brass); border-radius: 4px;
 }
 #dbdps .reveal:hover { color: var(--parch); }
 #dbdps.compact .panel.fight { gap: 0.55em; }
@@ -131,6 +134,30 @@ const CSS = `
 #dbdps .pill { all: unset; pointer-events: auto; position: absolute; cursor: move; display: flex; gap: 0.6em; align-items: baseline;
   background: var(--ink); border: 1px solid var(--brass); border-radius: 4px; padding: 0.35em 0.7em; }
 #dbdps .pill .num { color: var(--cyan); font-weight: 700; font-size: 1.15em; }
+#dbdps .panel.rotpanel { padding: 0.6em 0.45em 0.5em; gap: 0.4em; }
+#dbdps .rotpanel .head h2 { font-size: 0.86em; text-align: center; }
+#dbdps .rotpanel .count { font-size: 0.78em; color: var(--parch-dim); text-align: center; margin-top: -0.35em; }
+#dbdps .rot { min-height: 0; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.12em; scrollbar-width: none; }
+#dbdps .rot::-webkit-scrollbar { width: 0; }
+#dbdps .cast { display: flex; align-items: baseline; gap: 0.3em; padding: 0.12em 0.15em; border-radius: 2px; white-space: nowrap; transition: background 0.8s; }
+#dbdps .cast kbd { min-width: 1.5em; }
+#dbdps .cast.k-melee kbd, #dbdps .cast.k-ranged kbd { border-color: var(--brass-dim); color: var(--parch-dim); background: transparent; }
+#dbdps .cast.k-other kbd { border-style: dashed; color: var(--parch-dim); }
+#dbdps .cast .amt { margin-left: auto; font-weight: 700; font-size: 0.92em; }
+#dbdps .cast .amt.none { color: var(--parch-dim); font-weight: 400; }
+#dbdps .cast .amt.crit { color: var(--cyan); }
+#dbdps .cast.new { background: rgba(0, 204, 255, 0.18); transition: none; }
+#dbdps .gap { font-size: 0.72em; color: var(--parch-dim); text-align: center; display: flex; align-items: center; gap: 0.3em; padding: 0.1em 0; }
+#dbdps .gap::before, #dbdps .gap::after { content: ""; flex: 1; border-top: 1px solid var(--brass-dim); }
+#dbdps .rot .empty { font-size: 0.8em; text-align: center; padding: 0.3em 0; }
+@media (prefers-reduced-motion: reduce) { #dbdps .cast { transition: none; } }
+#dbdps .spellpanel.narrow { padding-left: 0.6em; padding-right: 0.6em; }
+#dbdps .spellpanel.narrow .spell { padding: 0.3em 0.25em; }
+#dbdps .spellpanel.narrow .spell .name { white-space: normal; overflow-wrap: anywhere; line-height: 1.15; }
+#dbdps .spellpanel.narrow .spell .rank { display: none; }
+#dbdps .spellpanel.narrow .spell .l2 { flex-wrap: wrap; gap: 0 0.45em; }
+#dbdps .spellpanel.narrow .spell .l2 .casts { margin-left: 0; }
+#dbdps .spellpanel.narrow .spell .more { font-size: 0.8em; gap: 0.05em 0.4em; }
 `;
 
 function onGamePage() {
@@ -166,6 +193,16 @@ function short(n) {
     if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 1 : 2) + 'B';
     if (n >= 1e7) return (n / 1e6).toFixed(n >= 1e8 ? 0 : 1) + 'M';
     return n.toLocaleString('en-US');
+}
+
+/** At most four characters: 850, 4.3k, 48k, 1.2M, 12M. */
+function compact(n) {
+    n = Math.round(Number(n) || 0);
+    const f = (v, unit) => (v < 10 ? (Math.floor(v * 10) / 10).toFixed(1).replace(/\.0$/, '') : String(Math.floor(v))) + unit;
+    if (n < 1000) return String(n);
+    if (n < 1e6) return f(n / 1e3, 'k');
+    if (n < 1e9) return f(n / 1e6, 'M');
+    return f(n / 1e9, 'B');
 }
 
 function pct(part, whole) {
@@ -205,6 +242,7 @@ class Overlay {
         this.rowEls = new Map();
         this.copiedAt = 0;
         this.drag = null;
+        this.rotStick = true; // keep the newest cast in view until the player scrolls up
     }
 
     mount() {
@@ -250,6 +288,11 @@ class Overlay {
             <button class="toggle" data-cmd="autoStart" data-el="auto" aria-pressed="false"><b></b>Start on first hit</button>
             <div class="status" data-el="status"></div>
           </section>
+          <section class="panel rotpanel" aria-label="Rotation">
+            <div class="head"><h2>Rotation</h2></div>
+            <p class="count" data-el="rotcount"></p>
+            <div class="rot" data-el="rot" aria-live="off"></div>
+          </section>
           <section class="panel spellpanel" aria-label="Spells">
             <div class="head"><h2>Spells</h2></div>
             <div class="spells" data-el="spells"></div>
@@ -262,6 +305,8 @@ class Overlay {
         for (const n of root.querySelectorAll('[data-el]')) this.el[n.dataset.el] = n;
         this.fight = root.querySelector('.fight');
         this.spellPanel = root.querySelector('.spellpanel');
+        this.rotPanel = root.querySelector('.rotpanel');
+        this.castEls = new Map();
         this.reveal = root.querySelector('.reveal');
 
         // Clicks act on mousedown and never take focus away from the game, so the keyboard keeps
@@ -270,6 +315,10 @@ class Overlay {
         window.addEventListener('mousemove', (e) => this.onDrag(e));
         window.addEventListener('mouseup', () => this.endDrag());
         window.addEventListener('resize', () => this.layout());
+        this.el.rot.addEventListener('scroll', () => {
+            const r = this.el.rot;
+            this.rotStick = r.scrollTop + r.clientHeight >= r.scrollHeight - 6;
+        });
         ipcRenderer.on('dbdps:snapshot', (_e, view) => this.render(view));
         ipcRenderer.invoke('dbdps:cmd', 'hello').then((r) => r && r.view && this.render(r.view)).catch(() => {});
         this.layout();
@@ -387,24 +436,37 @@ class Overlay {
             const width = Math.min(SIDE_MAX, Math.floor(gutter - 16));
             const fs = Math.max(11, Math.min(14, width / 14));
             this.root.style.setProperty('--fs', fs.toFixed(1) + 'px');
-            for (const [panel, left] of [[this.fight, gutter - 8 - width], [this.spellPanel, W - gutter + 8]]) {
+            // Right gutter: the Rotation strip against the game, then the Spells panel.
+            const rightAvail = Math.floor(gutter - 12);
+            const spellsW = Math.min(SIDE_MAX, rightAvail - ROT_W - ROT_GAP);
+            const rotLeft = W - gutter + 6;
+            const place = (panel, left, w) => {
                 Object.assign(panel.style, {
                     left: Math.round(left) + 'px',
                     top: Math.round(top + 8) + 'px',
-                    width: width + 'px',
+                    width: w + 'px',
                     maxHeight: Math.round(boxH - 16) + 'px',
                     height: ''
                 });
                 panel.hidden = hidden;
-            }
+            };
+            place(this.fight, gutter - 8 - width, width);
+            place(this.rotPanel, rotLeft, ROT_W);
+            place(this.spellPanel, rotLeft + ROT_W + ROT_GAP, spellsW);
+            // The strip keeps its full height, so the casts fill it from the top.
+            this.rotPanel.style.height = Math.round(boxH - 16) + 'px';
+            this.spellPanel.classList.toggle('narrow', spellsW < SPELLS_NARROW);
             this.el.pill.hidden = true;
+            // Hidden: just a "Damage meter" tab, in the top-left corner of the left gutter.
             this.reveal.hidden = !hidden;
+            Object.assign(this.reveal.style, { left: Math.max(4, Math.round(gutter - 8 - width)) + 'px', top: Math.round(top + 8) + 'px', maxWidth: width + 'px' });
             return;
         }
 
         // Compact: one card the player can move, or a small pill when shrunk.
         this.root.style.setProperty('--fs', '11.5px');
         this.reveal.hidden = !hidden;
+        Object.assign(this.reveal.style, { left: '8px', top: '8px', maxWidth: '' });
         if (this.compactOpen === undefined && this.view) {
             const c = this.view.settings.compact || {};
             this.compactOpen = c.open === true;
@@ -414,6 +476,8 @@ class Overlay {
         const open = this.compactOpen === true;
         this.fight.hidden = hidden || !open;
         this.spellPanel.hidden = hidden || !open;
+        this.rotPanel.hidden = hidden || !open;
+        this.spellPanel.classList.remove('narrow');
         this.el.pill.hidden = hidden || open;
         this.placeCompact();
     }
@@ -430,6 +494,13 @@ class Overlay {
             width: width + 'px',
             height: '',
             maxHeight: Math.max(120, window.innerHeight - (p.y + fightH + 14)) + 'px'
+        });
+        Object.assign(this.rotPanel.style, {
+            left: p.x + width + ROT_GAP + 'px',
+            top: p.y + 'px',
+            width: ROT_W + 'px',
+            maxHeight: Math.max(120, window.innerHeight - p.y - 8) + 'px',
+            height: Math.min(420, Math.max(120, window.innerHeight - p.y - 8)) + 'px'
         });
         Object.assign(this.el.pill.style, { left: p.x + 'px', top: p.y + 'px' });
     }
@@ -475,6 +546,7 @@ class Overlay {
         this.renderSpark(m);
         this.renderStatus(view);
         this.renderSpells(view);
+        this.renderRotation(m);
         if (firstView || this.lastHidden !== view.settings.hidden) {
             this.lastHidden = view.settings.hidden;
             this.layout();
@@ -577,6 +649,81 @@ class Overlay {
                 this.rowEls.delete(id);
             }
         }
+    }
+
+    /**
+     * The Rotation strip: every cast in the order it went out, newest at the bottom. Each line
+     * is the hotbar key (M or R for a basic attack) and the damage that cast has done so far,
+     * DoT ticks included; a pause of 1.5 s or more shows as a gap.
+     */
+    renderRotation(m) {
+        const rot = m.rotation || { count: 0, entries: [] };
+        const list = this.el.rot;
+        this.el.rotcount.textContent = rot.count ? int(rot.count) + ' cast' + (rot.count === 1 ? '' : 's') : '';
+        if (!rot.entries.length) {
+            if (!list.querySelector('.empty')) {
+                list.innerHTML = '<p class="empty">Casts show here in order.</p>';
+                this.castEls.clear();
+            }
+            return;
+        }
+        const empty = list.querySelector('.empty');
+        if (empty) empty.remove();
+        const stick = this.rotStick;
+        const seen = new Set();
+        let prev = null;
+        let prevT = null;
+        for (const e of rot.entries) {
+            if (prevT !== null && e.t - prevT >= 1500) {
+                const gid = 'g' + e.id;
+                seen.add(gid);
+                let g = this.castEls.get(gid);
+                if (!g) {
+                    g = document.createElement('div');
+                    g.className = 'gap';
+                    g.textContent = ((e.t - prevT) / 1000).toFixed(1) + 's';
+                    this.castEls.set(gid, g);
+                }
+                const next = prev ? prev.nextSibling : list.firstChild;
+                if (next !== g) list.insertBefore(g, next);
+                prev = g;
+            }
+            prevT = e.t;
+            const id = 'c' + e.id;
+            seen.add(id);
+            let node = this.castEls.get(id);
+            if (!node) {
+                node = document.createElement('div');
+                node.className = 'cast k-' + e.kind + (this.rotPainted ? ' new' : '');
+                this.castEls.set(id, node);
+                if (this.rotPainted) setTimeout(() => node.classList.remove('new'), 60);
+            }
+            const amt = e.damage
+                ? '<span class="amt' + (e.crits ? ' crit' : '') + '">' + esc(compact(e.damage)) + '</span>'
+                : '<span class="amt none">&#8211;</span>';
+            const html = '<kbd>' + esc(e.badge) + '</kbd>' + amt;
+            if (node._html !== html) {
+                node.innerHTML = html;
+                node._html = html;
+                const name = e.kind === 'melee' ? 'Basic attack (melee): ' + e.label : e.kind === 'ranged' ? 'Basic attack (ranged): ' + e.label : e.label + (e.rank ? ', rank ' + e.rank : '');
+                node.title =
+                    name + '\nat ' + clock(e.t) + '\n' +
+                    (e.damage
+                        ? int(e.damage) + ' damage' + (e.hits ? ', ' + e.hits + ' hit' + (e.hits === 1 ? '' : 's') + (e.crits ? ' (' + e.crits + ' crit)' : '') : '') + (e.dotDamage ? '\nover time ' + int(e.dotDamage) + ' (' + e.dotTicks + ' ticks)' : '')
+                        : 'no damage');
+            }
+            const next = prev ? prev.nextSibling : list.firstChild;
+            if (next !== node) list.insertBefore(node, next);
+            prev = node;
+        }
+        for (const [id, node] of this.castEls) {
+            if (!seen.has(id)) {
+                node.remove();
+                this.castEls.delete(id);
+            }
+        }
+        this.rotPainted = true;
+        if (stick) list.scrollTop = list.scrollHeight;
     }
 
     fillSpell(node, r, maxDamage, total) {

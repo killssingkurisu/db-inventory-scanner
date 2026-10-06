@@ -63,7 +63,7 @@ class CombatTracker extends EventEmitter {
             case P.PKT.POWER_CAST: {
                 const c = P.parsePowerCast(payload);
                 if (c.sourceId && c.sourceId === this.ownId) {
-                    this.emit('cast', { powerId: c.powerId });
+                    this.emit('cast', { powerId: c.powerId, combo: c.combo, projectile: c.projectileId !== null });
                 }
                 break;
             }

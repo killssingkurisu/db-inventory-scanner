@@ -51,11 +51,11 @@ function simulate(seconds, withScan) {
     m.start();
     let seed = 7;
     const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-    const melee = powerId('SwordMelee', 0) || 3;
+    const melee = 969; // RapierMelee
     for (let t = 0; t < seconds * 10; t++) {
         now = t * 100;
-        if (t % 6 === 0) {
-            m.recordCast({ powerId: melee });
+        if (t % 6 === 0 && !(t % 45 > 30)) {
+            m.recordCast({ powerId: melee, combo: { isMelee: true, id: 1 + ((t / 6) % 3) } });
             m.recordDamage({ kind: 'hit', powerId: melee, damage: 9000 + rnd() * 4000, crit: rnd() < 0.2, targetName: 'GoblinBrute' });
         }
         if (t % 45 === 3) {
