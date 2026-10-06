@@ -126,7 +126,7 @@ const POWER_DATA = {
         [3, 'SwordMelee', '', 'Sword Melee', 'Physical', '0,5', 0, '', 0],
         [4000, 'SkeletonSlash', '', '', 'Physical', '0', 0, '', 1]
     ],
-    abilities: { PoisonStrike: ['Rogue', 'Assault', 1, 10] }
+    abilities: { PoisonStrike: ['Rogue', 'Assault', 1, 10], FireBolt: ['Mage', 'Fire', 5, 10] }
 };
 
 async function main() {
@@ -303,7 +303,7 @@ async function main() {
         assert.strictEqual(s.totals.hits, 2);
         assert.strictEqual(s.totals.crits, 1);
         assert.deepStrictEqual(s.byStat, { attack: 1600, expertise: 400, unknown: 0 });
-        const ps = s.others.find((r) => r.key === 'PoisonStrike');
+        const ps = s.equipped.concat(s.others).find((r) => r.key === 'PoisonStrike');
         assert.deepStrictEqual([ps.damage, ps.casts, ps.hits, ps.dotDamage, ps.rank, ps.critRate, ps.share], [1400, 1, 1, 400, 10, 1, 0.7]);
         assert.strictEqual(s.ignored.hits, 2);
         m.start(); // resume
@@ -362,47 +362,57 @@ async function main() {
         assert.strictEqual(j.rotation.casts[1].damage, 4000, 'both hits and the tick go to the latest cast of the power');
         const csv = exporter.toCsv(m.report(), meta).split('\r\n');
         assert.ok(csv[0].startsWith('Spell,Rank,Hotbar key,Casts'));
-        assert.ok(csv[1].startsWith('Poison Strike,10,,2,1,1,100,4000,100,400'), csv[1]);
+        assert.ok(csv[1].startsWith('Poison Strike,10,1,2,1,1,100,4000,100,400'), csv[1]);
         const sum = exporter.toSummary(m.report(), meta);
         assert.ok(sum.includes('400 DPS, 4,000 damage, 2 casts, 1 hits (100% crit)'), sum);
         assert.ok(sum.includes('1. Poison Strike r10: 4,000 (100%), 2 casts'), sum);
-        assert.ok(sum.includes('Rotation: PoisonStrike PoisonStrike'), sum);
+        assert.ok(sum.includes('Rotation: 1 1'), sum);
     });
 
-    await check('rotation: casts in order, basic attacks as M and R, damage and DoTs per cast', () => {
+    await check('rotation: spells by hotbar slot, basic attacks as ME/RA runs counted by hits, DoTs per cast', () => {
         let now = 0;
         const m = new DpsMeter({ powers: table, now: () => now });
-        m.setSpellScan({ abilities: [{ key: 'PoisonStrike', rank: 10 }], hotbar: [{ key: 'PoisonStrike', slotKey: '1', name: 'Poison Strike', rank: 10 }] });
         m.start();
         m.recordCast({ powerId: 3, combo: { isMelee: true, id: 1 } });
         m.recordDamage({ kind: 'hit', powerId: 3, damage: 100 });
         now = 400;
         m.recordCast({ powerId: 3, combo: { isMelee: true, id: 2 } });
         m.recordDamage({ kind: 'hit', powerId: 3, damage: 120, crit: true });
+        m.recordDamage({ kind: 'hit', powerId: 3, damage: 80 }); // a second target: another reading
         now = 900;
         m.recordCast({ powerId: 993 });
         m.recordDamage({ kind: 'hit', powerId: 993, damage: 3000 });
         m.recordDamage({ kind: 'hit', powerId: 993, damage: 3100 });
         now = 1900;
         m.recordDamage({ kind: 'dot', powerId: 993, damage: 500 });
-        m.recordCast({ powerId: 3 }); // no combo field: still a basic attack by its power
-        m.recordCast({ powerId: 3, combo: { isMelee: false, id: 1 } }); // a ranged chain step
+        m.recordCast({ powerId: 3 }); // no combo field: a basic attack by its power, and it misses
+        now = 2000;
+        m.recordCast({ powerId: 3, combo: { isMelee: false, id: 1 } }); // ranged: a new run
+        m.recordDamage({ kind: 'hit', powerId: 3, damage: 70 });
+        m.recordCast({ powerId: 3, combo: { isMelee: false, id: 2 } });
+        m.recordDamage({ kind: 'hit', powerId: 3, damage: 75 });
         m.recordCast({ powerId: 4000 }); // a monster power that does nothing: not listed
         now = 2600;
+        m.recordCast({ powerId: 500 }); // hotbar slot 5 (E)
         m.recordCast({ powerId: 993 });
         m.recordDamage({ kind: 'dot', powerId: 993, damage: 600 }); // after the recast: the new cast's
         const r = m.snapshot().rotation;
-        assert.strictEqual(r.count, 6);
-        assert.deepStrictEqual(r.entries.map((e) => e.badge), ['M', 'M', '1', 'M', 'R', '1']);
-        assert.deepStrictEqual(r.entries.map((e) => e.damage), [100, 120, 6600, 0, 0, 600]);
-        assert.deepStrictEqual([r.entries[2].hits, r.entries[2].dotDamage, r.entries[1].crits], [2, 500, 1]);
-        assert.deepStrictEqual(r.entries.map((e) => e.t), [0, 400, 900, 1900, 1900, 2600]);
+        assert.deepStrictEqual(r.entries.map((e) => e.badge), ['ME3', '1', 'RA2', '5', '1'], 'the missed melee run is left out');
+        assert.deepStrictEqual(r.entries.map((e) => e.damage), [300, 6600, 145, 0, 600]);
+        assert.deepStrictEqual(r.entries.map((e) => e.casts), [2, 1, 2, 1, 1]);
+        assert.deepStrictEqual([r.entries[1].hits, r.entries[1].dotDamage, r.entries[0].crits], [2, 500, 1]);
+        assert.deepStrictEqual(r.entries.map((e) => e.slotKey), ['', '1', '', 'E', '1']);
+        assert.strictEqual(r.casts, 7);
+        const s = m.snapshot();
+        assert.deepStrictEqual(s.equipped.map((v) => [v.key, v.slot, v.hotkey]), [['PoisonStrike', 1, '1'], ['FireBolt', 5, 'E']], 'without a scan, used hotbar spells in slot order');
         const j = exporter.toJson(m.report(), { source: 't' });
-        assert.deepStrictEqual(j.rotation.steps, ['basic', 'basic', 'PoisonStrike', 'basic', 'basic', 'PoisonStrike']);
-        assert.deepStrictEqual(j.rotation.casts.map((c) => c.slotKey), ['M', 'M', '1', 'M', 'R', '1']);
+        assert.deepStrictEqual(j.rotation.steps, ['basic', 'basic', 'PoisonStrike', 'basic', 'basic', 'FireBolt', 'PoisonStrike']);
+        assert.deepStrictEqual(j.rotation.casts.map((c) => c.label), ['ME3', '1', 'RA2', '5', '1']);
+        assert.deepStrictEqual([j.rotation.casts[0].casts, j.rotation.casts[0].hits, j.rotation.casts[3].slotKey], [2, 3, 'E']);
         const csv = exporter.toCsv(m.report(), { character: 'ksq' });
-        assert.ok(csv.includes('\r\nRotation,Time (s),Key,Spell,Kind,Damage'), csv);
-        assert.ok(csv.includes('\r\n3,0.9,1,Poison Strike,spell,6600,6100,500,2,0\r\n'), csv);
+        assert.ok(csv.includes('\r\nRotation,Time (s),Shown as,Spell,Kind,Casts,Damage'), csv);
+        assert.ok(csv.includes('\r\n2,0.9,1,Poison Strike,spell,1,6600,6100,500,2,0\r\n'), csv);
+        assert.ok(exporter.toSummary(m.report(), {}).includes('Rotation: ME3 1 RA2 5 1'));
         m.reset();
         assert.strictEqual(m.snapshot().rotation.count, 0);
     });

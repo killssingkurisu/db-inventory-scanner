@@ -17,6 +17,8 @@ const ROTATION_SHOWN = 160;
 /** How long after a cast its power's hits and DoT ticks still count toward that cast. */
 const CAST_WINDOW_MS = 60000;
 const STATS = ['attack', 'expertise', 'unknown'];
+/** The game's hotbar locations (AbilityTypes HotbarLocation) and the keys that fire them. */
+const SLOT_KEYS = { 1: '1', 2: '2', 3: '3', 4: '4', 5: 'E', 6: 'Q' };
 
 /** Up to two capitals of a name, for a power that has no hotbar key: "Poison Strike" -> "PS". */
 function initials(label) {
@@ -284,6 +286,10 @@ class DpsMeter extends EventEmitter {
     /**
      * A cast by the player (packet 0x09). combo: the cast's basic-attack combo field, if any;
      * projectile: whether it fired a projectile.
+     *
+     * Every spell cast is its own rotation entry. Basic attacks in a row are one entry, a run,
+     * until something else is cast: they are the most frequent casts by far, and the run's
+     * count (ME3, RA5) goes up with each hit it lands.
      */
     recordCast({ powerId, combo, projectile }) {
         // A cast alone never starts the clock (auto-start waits for the first hit).
@@ -295,15 +301,30 @@ class DpsMeter extends EventEmitter {
         row.casts += 1;
         this.totals.casts += 1;
         const p = this.powers ? this.powers.get(powerId) : null;
+        const kind = this.castKind(powerId, combo, projectile);
+        const t = Math.round(this.elapsedMs());
+        const last = this.rotation[this.rotation.length - 1];
+        if ((kind === 'melee' || kind === 'ranged') && last && last.kind === kind) {
+            last.casts += 1;
+            last.endT = t;
+            last.powerIds.add(powerId);
+            this.lastCast.set(powerId, last);
+            this.emit('change');
+            return;
+        }
         const entry = {
             id: ++this.rotationSeq,
-            t: Math.round(this.elapsedMs()),
+            t,
+            endT: t,
             powerId,
-            kind: this.castKind(powerId, combo, projectile),
+            powerIds: new Set([powerId]),
+            kind,
             key: row.key,
             group: p && p.group ? p.group : '',
+            slot: kind === 'spell' && p && p.ability ? p.ability[2] : 0,
             label: row.label,
             rank: p && p.rank ? p.rank : 0,
+            casts: 1,
             hits: 0,
             crits: 0,
             hitDamage: 0,
@@ -317,35 +338,46 @@ class DpsMeter extends EventEmitter {
         this.emit('change');
     }
 
-    /** The key a rotation entry shows: the hotbar key, M or R for basic attacks, or initials. */
-    badge(entry, hotkeys) {
-        if (entry.kind === 'melee') return 'M';
-        if (entry.kind === 'ranged') return 'R';
-        return hotkeys.get(entry.key) || initials(entry.label);
+    /**
+     * What a rotation entry shows: a spell's hotbar slot from the game's data (1-6: 1, 2, 3, 4,
+     * E, Q), ME or RA plus the hits so far for a run of basic attacks, initials for anything else.
+     */
+    badge(entry) {
+        if (entry.kind === 'melee') return 'ME' + entry.hits;
+        if (entry.kind === 'ranged') return 'RA' + entry.hits;
+        if (entry.slot > 0) return String(entry.slot);
+        return initials(entry.label);
     }
 
-    /** Rotation entries worth showing: spells and basic attacks always, anything else once it deals damage. */
+    /**
+     * Rotation entries worth showing: every spell cast; a run of basic attacks once it has hit
+     * something; anything else once it deals damage.
+     */
     rotationEntries() {
-        return this.rotation.filter((e) => e.kind !== 'other' || e.damage > 0);
+        return this.rotation.filter((e) => (e.kind === 'spell' ? true : e.kind === 'other' ? e.damage > 0 : e.hits > 0 || e.damage > 0));
     }
 
     rotationView(limit) {
-        const hotkeys = new Map(this.equipped.map((e) => [e.group, e.key]));
         const list = this.rotationEntries();
         const shown = limit ? list.slice(-limit) : list;
         return {
             count: list.length,
+            casts: list.reduce((n, e) => n + e.casts, 0),
             entries: shown.map((e) => ({
                 id: e.id,
                 t: e.t,
-                badge: this.badge(e, hotkeys),
+                endT: e.endT,
+                badge: this.badge(e),
                 kind: e.kind,
                 key: e.key,
                 group: e.group,
                 label: e.label,
                 rank: e.rank,
+                slot: e.slot,
+                slotKey: SLOT_KEYS[e.slot] || '',
                 powerId: e.powerId,
-                slotKey: e.kind === 'melee' ? 'M' : e.kind === 'ranged' ? 'R' : hotkeys.get(e.key) || '',
+                powerIds: Array.from(e.powerIds),
+                casts: e.casts,
                 damage: e.damage,
                 hitDamage: e.hitDamage,
                 dotDamage: e.dotDamage,
@@ -392,6 +424,7 @@ class DpsMeter extends EventEmitter {
             damageType: p ? p.damageType : '',
             powerIds: Array.from(row.powerIds),
             powerKey: p ? p.group || String(p.name || '').replace(/\d+$/, '') : '',
+            slot: p && p.ability && p.ability[2] > 0 ? p.ability[2] : 0,
             summon: row.summon,
             monster: row.monster,
             hotkey: '',
@@ -425,8 +458,18 @@ class DpsMeter extends EventEmitter {
             }
             v.equipped = true;
             v.hotkey = e.key;
+            const ab = this.powers && this.powers.abilities ? this.powers.abilities[e.group] : null;
+            if (!v.slot && ab) v.slot = ab[2] || 0;
             views.delete(e.group);
             equippedRows.push(v);
+        }
+        // Without a spell scan, the hotbar spells you've used stand in for it, in slot order.
+        if (!this.equipped.length) {
+            for (const v of Array.from(views.values()).filter((r) => r.slot > 0).sort((a, b) => a.slot - b.slot || b.damage - a.damage)) {
+                v.hotkey = SLOT_KEYS[v.slot] || '';
+                views.delete(v.key);
+                equippedRows.push(v);
+            }
         }
         const others = Array.from(views.values()).sort((a, b) => b.damage - a.damage || b.casts - a.casts);
         const last = this.timeline.length;
@@ -465,4 +508,4 @@ class DpsMeter extends EventEmitter {
     }
 }
 
-module.exports = { DpsMeter, initials, isBasicPower };
+module.exports = { DpsMeter, initials, isBasicPower, SLOT_KEYS };

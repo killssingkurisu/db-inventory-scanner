@@ -16,8 +16,8 @@ const path = require('path');
 
 const SIDE_MIN = 150; // narrowest gutter that still takes a panel, in CSS px
 const SIDE_MAX = 300;
-const ROT_W = 60; // the Rotation strip beside the Spells panel
-const ROT_GAP = 5;
+const ROT_W = 68; // the Rotation strip beside the Spells panel
+const ROT_GAP = 4;
 const SPELLS_NARROW = 150; // below this the Spells rows stack their numbers
 
 const CSS = `
@@ -134,16 +134,17 @@ const CSS = `
 #dbdps .pill { all: unset; pointer-events: auto; position: absolute; cursor: move; display: flex; gap: 0.6em; align-items: baseline;
   background: var(--ink); border: 1px solid var(--brass); border-radius: 4px; padding: 0.35em 0.7em; }
 #dbdps .pill .num { color: var(--cyan); font-weight: 700; font-size: 1.15em; }
-#dbdps .panel.rotpanel { padding: 0.6em 0.45em 0.5em; gap: 0.4em; }
+#dbdps .panel.rotpanel { padding: 0.6em 0.3em 0.45em; gap: 0.4em; }
 #dbdps .rotpanel .head h2 { font-size: 0.86em; text-align: center; }
 #dbdps .rotpanel .count { font-size: 0.78em; color: var(--parch-dim); text-align: center; margin-top: -0.35em; }
 #dbdps .rot { min-height: 0; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.12em; scrollbar-width: none; }
 #dbdps .rot::-webkit-scrollbar { width: 0; }
-#dbdps .cast { display: flex; align-items: baseline; gap: 0.3em; padding: 0.12em 0.15em; border-radius: 2px; white-space: nowrap; transition: background 0.8s; }
+#dbdps .cast { display: flex; align-items: baseline; gap: 0.2em; padding: 0.12em 0.08em; border-radius: 2px; white-space: nowrap; overflow: hidden; transition: background 0.8s; }
 #dbdps .cast kbd { min-width: 1.5em; }
+#dbdps .cast.k-melee kbd, #dbdps .cast.k-ranged kbd { font-size: 0.7em; padding: 0 0.18em; }
 #dbdps .cast.k-melee kbd, #dbdps .cast.k-ranged kbd { border-color: var(--brass-dim); color: var(--parch-dim); background: transparent; }
 #dbdps .cast.k-other kbd { border-style: dashed; color: var(--parch-dim); }
-#dbdps .cast .amt { margin-left: auto; font-weight: 700; font-size: 0.92em; }
+#dbdps .cast .amt { margin-left: auto; font-weight: 700; font-size: 0.92em; min-width: 0; overflow: hidden; }
 #dbdps .cast .amt.none { color: var(--parch-dim); font-weight: 400; }
 #dbdps .cast .amt.crit { color: var(--cyan); }
 #dbdps .cast.new { background: rgba(0, 204, 255, 0.18); transition: none; }
@@ -437,7 +438,7 @@ class Overlay {
             const fs = Math.max(11, Math.min(14, width / 14));
             this.root.style.setProperty('--fs', fs.toFixed(1) + 'px');
             // Right gutter: the Rotation strip against the game, then the Spells panel.
-            const rightAvail = Math.floor(gutter - 12);
+            const rightAvail = Math.floor(gutter - 10);
             const spellsW = Math.min(SIDE_MAX, rightAvail - ROT_W - ROT_GAP);
             const rotLeft = W - gutter + 6;
             const place = (panel, left, w) => {
@@ -453,8 +454,6 @@ class Overlay {
             place(this.fight, gutter - 8 - width, width);
             place(this.rotPanel, rotLeft, ROT_W);
             place(this.spellPanel, rotLeft + ROT_W + ROT_GAP, spellsW);
-            // The strip keeps its full height, so the casts fill it from the top.
-            this.rotPanel.style.height = Math.round(boxH - 16) + 'px';
             this.spellPanel.classList.toggle('narrow', spellsW < SPELLS_NARROW);
             this.el.pill.hidden = true;
             // Hidden: just a "Damage meter" tab, in the top-left corner of the left gutter.
@@ -500,7 +499,7 @@ class Overlay {
             top: p.y + 'px',
             width: ROT_W + 'px',
             maxHeight: Math.max(120, window.innerHeight - p.y - 8) + 'px',
-            height: Math.min(420, Math.max(120, window.innerHeight - p.y - 8)) + 'px'
+            height: ''
         });
         Object.assign(this.el.pill.style, { left: p.x + 'px', top: p.y + 'px' });
     }
@@ -603,7 +602,7 @@ class Overlay {
 
         const wanted = [];
         if (equipped.length) {
-            wanted.push({ group: 'Equipped' });
+            wanted.push({ group: scan ? 'Equipped' : 'Hotbar' });
             for (const r of equipped) wanted.push(r);
             if (others.length) wanted.push({ group: 'Other damage' });
         }
@@ -657,9 +656,9 @@ class Overlay {
      * DoT ticks included; a pause of 1.5 s or more shows as a gap.
      */
     renderRotation(m) {
-        const rot = m.rotation || { count: 0, entries: [] };
+        const rot = m.rotation || { count: 0, casts: 0, entries: [] };
         const list = this.el.rot;
-        this.el.rotcount.textContent = rot.count ? int(rot.count) + ' cast' + (rot.count === 1 ? '' : 's') : '';
+        this.el.rotcount.textContent = rot.casts ? int(rot.casts) + ' cast' + (rot.casts === 1 ? '' : 's') : '';
         if (!rot.entries.length) {
             if (!list.querySelector('.empty')) {
                 list.innerHTML = '<p class="empty">Casts show here in order.</p>';
@@ -688,7 +687,7 @@ class Overlay {
                 if (next !== g) list.insertBefore(g, next);
                 prev = g;
             }
-            prevT = e.t;
+            prevT = e.endT === undefined ? e.t : e.endT;
             const id = 'c' + e.id;
             seen.add(id);
             let node = this.castEls.get(id);
@@ -705,9 +704,12 @@ class Overlay {
             if (node._html !== html) {
                 node.innerHTML = html;
                 node._html = html;
-                const name = e.kind === 'melee' ? 'Basic attack (melee): ' + e.label : e.kind === 'ranged' ? 'Basic attack (ranged): ' + e.label : e.label + (e.rank ? ', rank ' + e.rank : '');
+                const basic = e.kind === 'melee' || e.kind === 'ranged';
+                const name = basic
+                    ? (e.kind === 'melee' ? 'Melee' : 'Ranged') + ' basic attacks (' + e.label + '): ' + e.casts + ' in a row'
+                    : e.label + (e.rank ? ', rank ' + e.rank : '') + (e.slotKey ? ', hotbar ' + e.slotKey : '');
                 node.title =
-                    name + '\nat ' + clock(e.t) + '\n' +
+                    name + '\nat ' + clock(e.t) + (basic && e.endT > e.t ? ' to ' + clock(e.endT) : '') + '\n' +
                     (e.damage
                         ? int(e.damage) + ' damage' + (e.hits ? ', ' + e.hits + ' hit' + (e.hits === 1 ? '' : 's') + (e.crits ? ' (' + e.crits + ' crit)' : '') : '') + (e.dotDamage ? '\nover time ' + int(e.dotDamage) + ' (' + e.dotTicks + ' ticks)' : '')
                         : 'no damage');
@@ -739,7 +741,7 @@ class Overlay {
         const tip = [r.label + (r.rank ? ', rank ' + r.rank : ''), r.scaling ? 'Stats: ' + r.scaling : ''].filter(Boolean).join('\n');
         let html =
             '<div class="l1">' +
-            (r.hotkey ? '<kbd>' + esc(r.hotkey) + '</kbd>' : '') +
+            (r.slot || r.hotkey ? '<kbd>' + esc(r.slot ? String(r.slot) : r.hotkey) + '</kbd>' : '') +
             '<span class="name">' + esc(r.label) + '</span>' +
             (r.rank ? '<span class="rank">r' + esc(r.rank) + '</span>' : '') +
             '</div>' +

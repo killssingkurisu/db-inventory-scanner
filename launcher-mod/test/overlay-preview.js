@@ -147,6 +147,7 @@ const PAGE = (bg) => `<!DOCTYPE html><html><head><style>
     const browser = await chromium.launch();
     const shots = [
         { name: '2k-150pct', w: 1707, h: 889, dpr: 1.5, v: view(fight) },
+        { name: '2k-150pct-early-noscan', w: 1707, h: 889, dpr: 1.5, v: view(simulate(7, false), { scan: null }) },
         { name: '2k-150pct-idle-noscan', w: 1707, h: 889, dpr: 1.5, v: view(new DpsMeter({ powers: table }), { scan: null, link: { state: 'waiting', text: 'Waiting for the game to connect' } }) },
         { name: '1080p-100pct', w: 1920, h: 1009, dpr: 1, v: view(fight) },
         { name: '1200x800-compact', w: 1184, h: 761, dpr: 1, v: view(fight) },

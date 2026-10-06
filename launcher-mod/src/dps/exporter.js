@@ -73,14 +73,19 @@ function stepKey(e) {
 }
 
 function rotationCast(e, i) {
+    const basic = e.kind === 'melee' || e.kind === 'ranged';
     return {
         index: i + 1,
         atMs: e.t,
         at: clock(e.t),
-        key: e.kind === 'melee' || e.kind === 'ranged' ? 'basic' : stepKey(e),
+        endMs: e.endT === undefined ? e.t : e.endT,
+        key: basic ? 'basic' : stepKey(e),
         name: e.label,
         kind: e.kind,
+        label: e.badge,
+        slot: e.slot || null,
         slotKey: e.slotKey || null,
+        casts: e.casts || 1,
         rank: e.rank || null,
         powerId: e.powerId,
         damage: e.damage,
@@ -90,6 +95,16 @@ function rotationCast(e, i) {
         hits: e.hits,
         crits: e.crits
     };
+}
+
+/** The rotation as DPS Calculator combo steps: one entry per cast, a run of basic attacks expanded. */
+function rotationSteps(rotation) {
+    const out = [];
+    for (const e of rotation) {
+        const n = e.kind === 'melee' || e.kind === 'ranged' ? e.casts || 1 : 1;
+        for (let k = 0; k < n; k++) out.push(stepKey(e));
+    }
+    return out;
 }
 
 /**
@@ -147,7 +162,7 @@ function toJson(report, meta) {
         },
         spells: report.rows.map(spellRow),
         rotation: {
-            steps: rotation.map(stepKey),
+            steps: rotationSteps(rotation),
             casts: rotation.map(rotationCast)
         },
         targets: report.targets.map((t) => ({ name: t.name, damage: t.damage, hits: t.hits, share: share(t.damage) })),
@@ -155,7 +170,7 @@ function toJson(report, meta) {
         hits: report.hits.map((h) => ({ atMs: h[0], powerId: h[1], damage: h[2], crit: Boolean(h[3]), kind: h[4], target: h[5], summon: h[6] || null })),
         notes: [
             'Damage is what your game client sent to the server for each hit (packet 0x0A) and DoT tick (packet 0x79), including DoT ticks on the house training dummies, which the meter reads but never forwards. The server can add to it afterwards (the Soulthief passive, admin damage scaling), which is not included.',
-            'rotation.casts lists every cast (packet 0x09) in order while the timer ran: hotbar spells, basic attacks (kind melee or ranged, key "basic") and any other power that dealt damage. Each cast is credited with the hits and DoT ticks of its power until that power is cast again. rotation.steps is the same order as DPS Calculator combo steps.',
+            'rotation.casts lists the casts (packet 0x09) in order while the timer ran: each hotbar spell cast (slot 1-6 = keys 1, 2, 3, 4, E, Q), runs of basic attacks in a row as one entry (kind melee or ranged, label ME<hits> or RA<hits>, casts = how many), and any other power that dealt damage. Each entry is credited with the hits and DoT ticks of its power until that power is cast again. rotation.steps is the same order as DPS Calculator combo steps, one "basic" per basic attack.',
             'Scaling: a direct hit counts toward the stat in its spell\'s Stats line ("1.49x attack"); every DoT tick counts toward Expertise, which the game puts into each DoT when it lands.'
         ]
     };
@@ -194,9 +209,9 @@ function toCsv(report, meta) {
     const rotation = report.rotation || [];
     if (rotation.length) {
         lines.push('');
-        row(['Rotation', 'Time (s)', 'Key', 'Spell', 'Kind', 'Damage', 'Direct damage', 'DoT damage', 'Hits', 'Crits']);
+        row(['Rotation', 'Time (s)', 'Shown as', 'Spell', 'Kind', 'Casts', 'Damage', 'Direct damage', 'DoT damage', 'Hits', 'Crits']);
         rotation.forEach((e, i) => {
-            row([i + 1, round(e.t / 1000, 2), e.slotKey || '', e.label, e.kind, e.damage, e.hitDamage, e.dotDamage, e.hits, e.crits]);
+            row([i + 1, round(e.t / 1000, 2), e.badge, e.label, e.kind, e.casts || 1, e.damage, e.hitDamage, e.dotDamage, e.hits, e.crits]);
         });
     }
     return lines.join('\r\n') + '\r\n';
@@ -222,7 +237,7 @@ function toSummary(report, meta) {
     }
     const rotation = report.rotation || [];
     if (rotation.length) {
-        const keys = rotation.slice(0, 60).map((e) => (e.kind === 'melee' ? 'M' : e.kind === 'ranged' ? 'R' : e.slotKey || stepKey(e)));
+        const keys = rotation.slice(0, 60).map((e) => e.badge || stepKey(e));
         out.push('Rotation: ' + keys.join(' ') + (rotation.length > 60 ? ' … (' + rotation.length + ' casts)' : ''));
     }
     return out.join('\n');
