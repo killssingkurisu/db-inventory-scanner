@@ -59,7 +59,7 @@ class DpsMeter extends EventEmitter {
         for (const row of this.rows.values()) {
             const p = this.powers && this.powers.get(row.lastPowerId);
             if (p && !row.summon) {
-                row.label = p.label;
+                row.label = p.ability && p.ability[2] > 0 ? p.abilityLabel : p.label;
             }
         }
         this.emit('change');
@@ -139,6 +139,7 @@ class DpsMeter extends EventEmitter {
         this.rotation = []; // every cast, in order: see recordCast
         this.rotationSeq = 0;
         this.lastCast = new Map(); // powerId -> its latest rotation entry
+        this.lastByKey = new Map(); // spell row key -> its latest rotation entry
         this.emit('change');
     }
 
@@ -151,8 +152,9 @@ class DpsMeter extends EventEmitter {
         if (p) {
             // Hotbar abilities by their base power (every rank in one row). Everything else
             // (basic attacks, rune procs, pets) by its name, so two "Sword Melee" powers share a row.
-            key = p.ability && p.ability[2] > 0 ? p.group : 'name:' + p.label;
-            label = p.label;
+            const hotbar = p.ability && p.ability[2] > 0;
+            key = hotbar ? p.abilityKey : 'name:' + p.label;
+            label = hotbar ? p.abilityLabel : p.label;
         } else if (summonName) {
             key = 'summon:' + summonName;
             label = summonName;
@@ -258,7 +260,13 @@ class DpsMeter extends EventEmitter {
 
         // The cast this hit or tick belongs to: the latest cast of the same power. A recast
         // refreshes a DoT, so later ticks go to the newer cast.
-        const entry = summon ? null : this.lastCast.get(powerId);
+        let entry = summon ? null : this.lastCast.get(powerId);
+        if (!entry && !summon && this.powers) {
+            // A follow-up or rune power that was never cast itself (a Bleed a legendary rune adds):
+            // its damage goes to the latest cast of its skill.
+            const p = this.powers.get(powerId);
+            if (p && p.followUp) entry = this.lastByKey.get(row.key) || null;
+        }
         if (entry && t - entry.t <= CAST_WINDOW_MS) {
             entry.damage += amount;
             if (kind === 'dot') {
@@ -306,11 +314,23 @@ class DpsMeter extends EventEmitter {
             return;
         }
         const row = this.rowFor(powerId, '');
-        row.casts += 1;
-        this.totals.casts += 1;
         const p = this.powers ? this.powers.get(powerId) : null;
         const kind = this.castKind(powerId, combo, projectile);
         const t = Math.round(this.elapsedMs());
+        // A skill's follow-up (Mist Walk's closing strike, Charon's Blades' avatar attacks) is
+        // part of the cast that started it, not another press of the key.
+        if (p && p.followUp) {
+            const parent = this.lastByKey.get(row.key);
+            if (parent && t - parent.endT <= CAST_WINDOW_MS) {
+                parent.endT = t;
+                parent.powerIds.add(powerId);
+                this.lastCast.set(powerId, parent);
+                this.emit('change');
+                return;
+            }
+        }
+        row.casts += 1;
+        this.totals.casts += 1;
         const last = this.rotation[this.rotation.length - 1];
         if ((kind === 'melee' || kind === 'ranged') && last && last.kind === kind) {
             last.casts += 1;
@@ -328,7 +348,7 @@ class DpsMeter extends EventEmitter {
             powerIds: new Set([powerId]),
             kind,
             key: row.key,
-            group: p && p.group ? p.group : '',
+            group: p ? p.abilityKey || p.group || '' : '',
             slot: kind === 'spell' && p && p.ability ? p.ability[2] : 0,
             label: row.label,
             rank: p && p.rank ? p.rank : 0,
@@ -343,6 +363,7 @@ class DpsMeter extends EventEmitter {
         this.rotation.push(entry);
         if (this.rotation.length > MAX_ROTATION) this.rotation.shift();
         this.lastCast.set(powerId, entry);
+        this.lastByKey.set(row.key, entry);
         this.emit('change');
     }
 
@@ -433,7 +454,7 @@ class DpsMeter extends EventEmitter {
             description: scan && scan.description ? scan.description : p ? p.description : '',
             damageType: p ? p.damageType : '',
             powerIds: Array.from(row.powerIds),
-            powerKey: p ? p.group || String(p.name || '').replace(/\d+$/, '') : '',
+            powerKey: p ? p.abilityKey || p.group || String(p.name || '').replace(/\d+$/, '') : '',
             slot: p && p.ability && p.ability[2] > 0 ? p.ability[2] : 0,
             summon: row.summon,
             monster: row.monster,

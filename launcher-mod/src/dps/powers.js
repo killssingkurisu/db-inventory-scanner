@@ -32,7 +32,10 @@ function decodeEntities(s) {
         .replace(/&amp;/g, '&');
 }
 
-/** Raw records, compact: [id, name, base, display, damageType, mana, cooldownMs, description, isMonster, targetMethod]. */
+/**
+ * Raw records, compact: [id, name, base, display, damageType, mana, cooldownMs, description,
+ * isMonster, targetMethod, powerGroup].
+ */
 function parsePowerXml(xml, isMonster) {
     const out = [];
     const re = /<Power PowerName="([^"]+)">([\s\S]*?)<\/Power>/g;
@@ -53,7 +56,8 @@ function parsePowerXml(xml, isMonster) {
             Number(tag(m[2], 'CoolDownTime')) || 0,
             tag(m[2], 'Description'),
             isMonster ? 1 : 0,
-            tag(m[2], 'TargetMethod')
+            tag(m[2], 'TargetMethod'),
+            tag(m[2], 'PowerGroup')
         ]);
     }
     return out;
@@ -145,8 +149,21 @@ class PowerTable {
         this.byId = new Map();
         this.abilities = data.abilities || {};
         for (const r of data.powers || []) {
-            const [id, name, base, display, damageType, mana, cooldown, description, monster, targetMethod] = r;
+            const [id, name, base, display, damageType, mana, cooldown, description, monster, targetMethod, powerGroup] = r;
             const group = base || name;
+            // The ability a power belongs to. Usually its own base name (PoisonStrike10 ->
+            // PoisonStrike); a skill's follow-up powers name it in PowerGroup instead: Mist Walk's
+            // MistWalkClose10, Charon's Blades' SeekingBladesAttack10 and EndSeekingBlades.
+            // A legendary item's rune for a skill is a power too (LegendaryMistWalk: Mist Walk adds
+            // 3 Bleed), and the damage it adds counts for that skill.
+            const legendary = /^Legendary(.+)$/.exec(name);
+            const abilityKey = this.abilities[group]
+                ? group
+                : legendary && this.abilities[legendary[1]]
+                  ? legendary[1]
+                  : powerGroup && this.abilities[powerGroup]
+                    ? powerGroup
+                    : '';
             let rank = 0;
             if (base && name.startsWith(base)) {
                 const n = Number(name.slice(base.length));
@@ -168,8 +185,19 @@ class PowerTable {
                 // How the power picks its target: MeleeCombo for melee basic attacks,
                 // ProjectilePlayer / ProjectileCombo for ranged ones, Self, RangedAoE, ...
                 targetMethod: targetMethod || '',
-                ability: this.abilities[group] || null
+                powerGroup: powerGroup || '',
+                abilityKey,
+                followUp: Boolean(abilityKey && abilityKey !== group),
+                ability: abilityKey ? this.abilities[abilityKey] : null
             });
+        }
+        // An ability's name, from its own powers (follow-ups often have none, or another).
+        const names = {};
+        for (const p of this.byId.values()) {
+            if (p.abilityKey && !p.followUp && !names[p.abilityKey]) names[p.abilityKey] = p.label;
+        }
+        for (const p of this.byId.values()) {
+            p.abilityLabel = p.abilityKey ? names[p.abilityKey] || p.label : p.label;
         }
     }
 

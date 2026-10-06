@@ -14,7 +14,7 @@ const { PowerTable, dataFromSwz } = require('./powers');
 const { SpellScanStore } = require('./spellScans');
 const exporter = require('./exporter');
 
-const VERSION = '1.5.1';
+const VERSION = '1.5.2';
 const SOURCE = 'DB DPS Overlay ' + VERSION;
 const PORT_BASE = 47690;
 const PORT_LAST = 47890;

@@ -126,9 +126,12 @@ const POWER_DATA = {
         [3, 'SwordMelee', '', 'Sword Melee', 'Physical', '0,5', 0, '', 0],
         [4000, 'SkeletonSlash', '', '', 'Physical', '0', 0, '', 1],
         [1094, 'PoisonDagger', '', 'Bone Daggers', 'Nature', '0,5', 0, 'Ranged basic attacks leave Poison [Stats: 0.8x attack, 0.5x Expertise/s (5s)]', 0, 'ProjectilePlayer'],
-        [969, 'RapierMelee', '', 'Dagger Melee', 'Physical', '0,5', 0, '', 0, 'MeleeCombo']
+        [969, 'RapierMelee', '', 'Dagger Melee', 'Physical', '0,5', 0, '', 0, 'MeleeCombo'],
+        [1184, 'MistWalk10', 'MistWalk', 'Mist Walk', 'Physical', '30', 0, 'Dash to enemies', 0, 'Charge', 'MistWalk'],
+        [1185, 'MistWalkClose10', 'MistWalkClose', '', 'Physical', '0', 0, 'Mistwalk combo. [Stats: 0.2x Expertise/s (5s)]', 0, 'PBAoE', 'MistWalk'],
+        [8032, 'LegendaryMistWalk', '', 'Mist Walk', '', '0,5', 0, '', 0, 'MeleeCombo', 'SwordMelee']
     ],
-    abilities: { PoisonStrike: ['Rogue', 'Assault', 1, 10], FireBolt: ['Mage', 'Fire', 5, 10], PoisonDagger: ['Executioner', 'Assault', 0, 1] }
+    abilities: { PoisonStrike: ['Rogue', 'Assault', 1, 10], FireBolt: ['Mage', 'Fire', 5, 10], PoisonDagger: ['Executioner', 'Assault', 0, 1], MistWalk: ['Executioner', 'Assault', 4, 10] }
 };
 
 async function main() {
@@ -373,6 +376,27 @@ async function main() {
         m.recordDamage({ kind: 'hit', powerId: 1094, damage: 10 });
         m.recordDamage({ kind: 'dot', powerId: 1094, damage: 5 });
         assert.strictEqual(m.snapshot().rotation.text, 'MA1 RA2');
+    });
+
+    await check('a skill\'s follow-up powers and legendary rune count for the skill, as one cast', () => {
+        let now = 0;
+        const m = new DpsMeter({ powers: table, now: () => now });
+        m.start();
+        m.recordCast({ powerId: 1184 }); // Mist Walk: the dash does no damage itself
+        now = 700;
+        m.recordCast({ powerId: 1185 }); // its closing strike, cast by the game
+        m.recordDamage({ kind: 'dot', powerId: 1185, damage: 400 });
+        m.recordDamage({ kind: 'dot', powerId: 8032, damage: 100 }); // the Bleed a legendary rune adds
+        m.recordCast({ powerId: 969, combo: { isMelee: true, id: 1 } });
+        m.recordDamage({ kind: 'hit', powerId: 969, damage: 50 });
+        const s = m.snapshot();
+        const rows = s.equipped.concat(s.others);
+        const mw = rows.find((r) => r.key === 'MistWalk');
+        assert.deepStrictEqual([mw.label, mw.casts, mw.damage, mw.dotDamage, mw.slot], ['Mist Walk', 1, 500, 500, 4]);
+        assert.ok(!rows.some((r) => /Mist Walk/.test(r.label) && r.key !== 'MistWalk'), 'no separate Mist Walk rows under other damage');
+        assert.strictEqual(s.totals.casts, 2, 'the follow-up is not another cast');
+        assert.strictEqual(s.rotation.text, 's4 MA1');
+        assert.strictEqual(s.rotation.entries[0].damage, 500);
     });
 
     console.log('Export');
