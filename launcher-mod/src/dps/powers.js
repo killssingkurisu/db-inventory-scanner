@@ -174,21 +174,24 @@ class PowerTable {
     }
 
     /**
-     * Which stat a hit of this power scales with. A direct hit takes the first "Nx stat" term,
-     * a DoT tick the first "Nx stat/s" term. Without a Stats line, physical powers scale with
-     * Attack and everything elemental (Fire, Ice, Holy, Dark, ...) with Expertise.
+     * Which stat a hit of this power scales with. A direct hit takes the first "Nx stat" term of
+     * the Stats line; without one, physical powers scale with Attack and everything elemental
+     * (Fire, Ice, Holy, Dark, ...) with Expertise. A DoT tick always scales with Expertise: the
+     * client snapshots the caster's magicDamage (Expertise) into every buff a power puts on its
+     * target (CombatState: AddBuff(type, caster, caster.magicDamage * (1 + mods), powerId)),
+     * whatever the power's hit scales with.
      */
     statFor(id, kind) {
+        if (kind === 'dot') {
+            return 'expertise';
+        }
         const p = this.byId.get(id);
         if (!p) {
             return 'unknown';
         }
-        const term = kind === 'dot' ? p.scaling.dot || p.scaling.hit : p.scaling.hit || p.scaling.dot;
+        const term = p.scaling.hit;
         if (term) {
             return term.stat;
-        }
-        if (kind === 'dot') {
-            return 'expertise';
         }
         if (!p.damageType) {
             return 'unknown';

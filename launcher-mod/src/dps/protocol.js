@@ -75,6 +75,58 @@ class BitReader {
     }
 }
 
+/** Writes the same bit-packed fields BitReader reads. */
+class BitWriter {
+    constructor() {
+        this.bytes = [];
+        this.bit = 0;
+    }
+
+    bits(value, n) {
+        for (let i = n - 1; i >= 0; i--) {
+            const b = Math.floor(value / Math.pow(2, i)) % 2;
+            const at = this.bit >> 3;
+            if (at >= this.bytes.length) this.bytes.push(0);
+            if (b) this.bytes[at] |= 0x80 >> (this.bit & 7);
+            this.bit += 1;
+        }
+    }
+
+    bool(v) {
+        this.bits(v ? 1 : 0, 1);
+    }
+
+    /** method_9: the fewest even number of bits that hold the value, as a 4-bit prefix (bits / 2 - 1). */
+    uint(v) {
+        let width = Math.max(1, Math.floor(v).toString(2).length);
+        width += width & 1;
+        this.bits(width / 2 - 1, 4);
+        this.bits(v, width);
+    }
+
+    str(s) {
+        const b = Buffer.from(String(s), 'utf8');
+        this.bits(b.length, 16);
+        for (const x of b) this.bits(x, 8);
+    }
+
+    /** Copies `count` bits of `buf` starting at bit `from`. */
+    copy(buf, from, count) {
+        const r = new BitReader(buf);
+        r.bit = from;
+        let left = count;
+        while (left > 0) {
+            const n = Math.min(left, 24);
+            this.bits(r.bits(n), n);
+            left -= n;
+        }
+    }
+
+    toBuffer() {
+        return Buffer.from(this.bytes);
+    }
+}
+
 const PKT = {
     ENT_INCREMENTAL_UPDATE: 0x07,
     ENT_FULL_UPDATE: 0x08,
@@ -205,6 +257,38 @@ function parseEnterWorld(payload) {
 }
 
 /**
+ * Returns a copy of an enter-world payload (0x21) with the game server's host and port replaced.
+ * Every other bit is copied as it was; the copy can end in one more byte of zero padding.
+ */
+function rewriteEnterWorld(payload, host, port) {
+    const r = new BitReader(payload);
+    r.uint();
+    r.uint();
+    r.str();
+    if (r.bool()) {
+        r.uint();
+        r.uint();
+    }
+    const hostAt = r.bit;
+    const oldHost = r.str();
+    const oldPort = r.uint();
+    const restAt = r.bit;
+    const w = new BitWriter();
+    w.copy(payload, 0, hostAt);
+    w.str(host);
+    w.uint(port);
+    w.copy(payload, restAt, payload.length * 8 - restAt);
+    return { payload: w.toBuffer(), host: oldHost, port: oldPort };
+}
+
+function frame(id, payload) {
+    const head = Buffer.alloc(4);
+    head.writeUInt16BE(id, 0);
+    head.writeUInt16BE(payload.length, 2);
+    return Buffer.concat([head, payload]);
+}
+
+/**
  * Splits a byte stream into packets. Feed it every chunk in order; it calls onPacket(id, payload)
  * for each complete packet and keeps the remainder. A Flash socket-policy exchange
  * ("<policy-file-request/>" or the XML answer, both NUL-terminated) is skipped whole.
@@ -255,7 +339,10 @@ class PacketSplitter {
 
 module.exports = {
     BitReader,
+    BitWriter,
     PacketSplitter,
+    rewriteEnterWorld,
+    frame,
     PKT,
     TEAM,
     parseEntityFullUpdate,

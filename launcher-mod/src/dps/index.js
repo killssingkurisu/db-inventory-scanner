@@ -6,33 +6,66 @@ const http = require('http');
 const https = require('https');
 const { spawnSync } = require('child_process');
 
-const { GameRelay } = require('./relay');
+const { RelayHub } = require('./relay');
+const { WebProxy } = require('./httpProxy');
+const swfpatch = require('./swfpatch');
 const { DpsMeter } = require('./meter');
 const { PowerTable, dataFromSwz } = require('./powers');
 const { SpellScanStore } = require('./spellScans');
 const exporter = require('./exporter');
 
-const VERSION = '1.0.0';
+const VERSION = '1.2.0';
 const SOURCE = 'DB DPS Overlay ' + VERSION;
 const PORT_BASE = 47690;
 const PORT_LAST = 47890;
-/** The client logs in to this host on this port (LinkUpdater.const_1264, Connection.LOGINSERVER_PORT). */
+/** The live client logs in here (LinkUpdater.const_1264, Connection.LOGINSERVER_PORT); the SWF itself is what counts. */
 const LOGIN_HOST = 'dungeonblitzr.theminesa.studio';
-const GAME_PORT = 8080;
+const LOGIN_PORT = 8080;
+
+/** Log lines go to the console and, once the launcher's data folder is known, to dps-overlay.log there. */
+const logState = { file: '', pending: [] };
 
 function log(message) {
+    const line = new Date().toISOString() + ' ' + message;
     console.log('[DPS] ' + message);
+    if (!logState.file) {
+        logState.pending.push(line);
+        return;
+    }
+    try {
+        fs.appendFileSync(logState.file, line + '\n');
+    } catch (_e) {
+        // logging is best effort
+    }
 }
 
-/** Every game server address the client may open: the login host, and each server in servers.json. */
-function gameTargets(appRoot) {
-    const hosts = [LOGIN_HOST];
+function openLog(file) {
+    logState.file = file;
+    try {
+        fs.writeFileSync(file, logState.pending.join('\n') + (logState.pending.length ? '\n' : ''));
+    } catch (_e) {
+        logState.file = '';
+    }
+    logState.pending = [];
+}
+
+/**
+ * The game websites the launcher may open: the official host and each plain-HTTP server in
+ * servers.json (a server on this computer is left alone). Their HTTP traffic is mapped onto the
+ * meter's web proxy so it can hand the game a DungeonBlitz.swf that logs in through the relay.
+ */
+function webHosts(appRoot) {
+    const out = [{ host: LOGIN_HOST, port: 80 }];
     try {
         const servers = JSON.parse(fs.readFileSync(path.join(appRoot, 'servers.json'), 'utf8'));
         for (const s of (servers && servers.servers) || []) {
             try {
-                const h = new URL(String(s.url)).hostname.toLowerCase();
-                if (h && !hosts.includes(h)) hosts.push(h);
+                const u = new URL(String(s.url));
+                if (u.protocol !== 'http:') continue;
+                const host = u.hostname.toLowerCase();
+                const port = Number(u.port) || 80;
+                if (/^(127\.|localhost$|\[?::1\]?$)/.test(host)) continue;
+                if (!out.some((w) => w.host === host && w.port === port)) out.push({ host, port });
             } catch (_e) {
                 // not a URL
             }
@@ -40,7 +73,7 @@ function gameTargets(appRoot) {
     } catch (_e) {
         // servers.json is optional here
     }
-    return hosts.map((host) => ({ host, port: GAME_PORT }));
+    return out;
 }
 
 /**
@@ -66,11 +99,11 @@ function findFreePorts(count) {
     return ports;
 }
 
-function fetchBuffer(url, timeoutMs) {
+function fetchBuffer(url, timeoutMs, okStatuses) {
     return new Promise((resolve, reject) => {
         const lib = url.startsWith('https:') ? https : http;
-        const req = lib.get(url, { timeout: timeoutMs }, (res) => {
-            if (res.statusCode !== 200) {
+        const req = lib.get(url, { timeout: timeoutMs, headers: { 'cache-control': 'no-cache' } }, (res) => {
+            if (!(okStatuses || [200]).includes(res.statusCode)) {
                 res.resume();
                 reject(new Error('HTTP ' + res.statusCode));
                 return;
@@ -100,8 +133,12 @@ class DpsOverlay {
         this.electron = require('electron');
         this.app = this.electron.app;
         this.enabled = false;
-        this.targets = [];
-        this.relays = [];
+        this.web = [];
+        this.proxy = null;
+        this.hub = null;
+        this.hubError = '';
+        this.swfFv = '';
+        this.presence = { checkedAt: 0, playing: false };
         this.meter = new DpsMeter();
         this.scans = null;
         this.powersInfo = { source: 'none', count: 0 };
@@ -116,7 +153,7 @@ class DpsOverlay {
         this.dirty = true;
         this.lastSent = 0;
         this.lastExport = '';
-        this.settings = { autoStart: false, hidden: false, compact: { x: 16, y: 16, open: true } };
+        this.settings = { autoStart: false, hidden: false, compact: { x: 16, y: 16, open: false } };
         this.meter.on('change', () => {
             this.dirty = true;
         });
@@ -129,21 +166,21 @@ class DpsOverlay {
         return path.join(__dirname, 'preload.js');
     }
 
-    /** Synchronous, before 'ready': picks ports and maps the game socket onto them. */
+    /** Synchronous, before 'ready': picks the web proxy's port and maps the game website onto it. */
     prepare() {
         if (process.env.DUNGEON_BLITZ_DPS === '0') {
             log('Off (DUNGEON_BLITZ_DPS=0).');
             return false;
         }
-        this.targets = gameTargets(this.appRoot);
-        const ports = findFreePorts(this.targets.length);
-        this.relays = this.targets.map(
-            (t, i) => new GameRelay({ listenPort: ports[i], upstreamHost: t.host, upstreamPort: t.port })
-        );
-        const rules = this.relays.map((r) => 'MAP ' + r.upstreamHost + ':' + r.upstreamPort + ' 127.0.0.1:' + r.listenPort);
+        this.web = webHosts(this.appRoot);
+        const [proxyPort] = findFreePorts(1);
+        this.proxy = new WebProxy({ listenPort: proxyPort, hosts: this.web, patchSwf: (buf) => this.patchGameSwf(buf) });
+        // Chromium honours these for the page and for Flash's HTTP requests (not for Flash's
+        // sockets, which is why the SWF itself is pointed at the relay).
+        const rules = this.web.map((w) => 'MAP ' + w.host + ':' + w.port + ' 127.0.0.1:' + proxyPort);
         const existing = this.app.commandLine.getSwitchValue('host-resolver-rules');
         this.app.commandLine.appendSwitch('host-resolver-rules', (existing ? existing + ', ' : '') + rules.join(', '));
-        log('Game socket routed through the meter: ' + rules.join(', '));
+        log('Game website routed through the meter: ' + rules.join(', '));
         this.enabled = true;
 
         this.app.on('web-contents-created', (_e, wc) => this.watchContents(wc));
@@ -153,6 +190,8 @@ class DpsOverlay {
 
     async onReady() {
         const { session, ipcMain } = this.electron;
+        openLog(path.join(this.app.getPath('userData'), 'dps-overlay.log'));
+        log('DB DPS Overlay ' + VERSION + ', Electron ' + process.versions.electron);
         this.loadSettings();
         this.meter.autoStart = Boolean(this.settings.autoStart);
 
@@ -170,20 +209,97 @@ class DpsOverlay {
         this.scans.refresh();
         this.scans.watch();
 
-        for (const relay of this.relays) {
-            relay.on('connection', (tracker) => this.followConnection(relay, tracker));
-            relay.on('status', () => {
-                this.dirty = true;
-            });
-            const ok = await relay.listen();
-            if (!ok) log('Relay for ' + relay.label + ' could not listen on ' + relay.listenPort + ': ' + relay.error);
+        this.hub = new RelayHub();
+        this.hub.on('connection', (relay, tracker) => this.followConnection(relay, tracker));
+        this.hub.on('redirect', (relay, info) => this.onRedirect(relay, info));
+        this.hub.on('relay', (relay) => log('Relay for ' + relay.label + ' listening on 127.0.0.1:' + relay.listenPort));
+        this.hub.on('status', () => {
+            this.dirty = true;
+        });
+        const policy = await this.hub.startPolicyServer();
+        log(policy ? 'Answering Flash socket-policy requests on 127.0.0.1:' + this.hub.policyPort : 'Port ' + this.hub.policyPort + ' is taken (' + this.hub.policyError + '); the relays answer policy requests themselves');
+        try {
+            await this.hub.relayFor(LOGIN_HOST, LOGIN_PORT);
+        } catch (err) {
+            this.hubError = String((err && err.message) || err);
+            log('No relay port: ' + this.hubError);
         }
 
+        this.proxy.on('request', (r) => this.onWebRequest(r));
+        this.proxy.on('swf', (info) => {
+            const rep = info.report || {};
+            log(info.ok
+                ? 'Served DungeonBlitz.swf logging in through 127.0.0.1:' + this.loginRelayPort(rep) + ' instead of ' + rep.originalHost + ':' + rep.originalPort +
+                  (rep.dummyDotPatches ? ', with training-dummy DoT ticks visible' : ', without training-dummy DoT ticks (check not found)')
+                : 'Served the original DungeonBlitz.swf: ' + info.error);
+            this.dirty = true;
+        });
+        const ok = await this.proxy.listen();
+        log(ok ? 'Web proxy listening on 127.0.0.1:' + this.proxy.listenPort : "Web proxy couldn't listen on " + this.proxy.listenPort + ': ' + this.proxy.error);
+
         setInterval(() => this.push(), 250);
+        setInterval(() => this.checkPresence(), 10000);
         this.app.on('before-quit', () => {
-            for (const r of this.relays) r.close();
+            if (this.hub) this.hub.close();
+            if (this.proxy) this.proxy.close();
             if (this.scans) this.scans.close();
         });
+    }
+
+    /** Hands the game a copy of DungeonBlitz.swf whose login connection goes to the relay. */
+    async patchGameSwf(buf) {
+        const target = swfpatch.readLoginTarget(buf);
+        if (!target) return { swf: buf, report: { ok: false } };
+        const relay = await this.hub.relayFor(target.host, target.port);
+        return swfpatch.patchSwf(buf, { port: relay.listenPort });
+    }
+
+    loginRelayPort(report) {
+        const r = this.hub && report ? this.hub.find(report.originalHost, report.originalPort) : null;
+        return r ? r.listenPort : '?';
+    }
+
+    onWebRequest(r) {
+        const url = 'http://' + r.host + r.url;
+        if (/\/DungeonBlitz\.swf/i.test(r.url)) {
+            const fv = /[?&]fv=([^&]+)/.exec(r.url);
+            if (fv) this.swfFv = decodeURIComponent(fv[1]);
+        }
+        if (/\/Game\.swz(\?|$)/i.test(r.url) && (r.status === 200 || r.status === 304)) {
+            this.loadLivePowers(url.replace(/\?.*$/, ''));
+        }
+    }
+
+    onRedirect(relay, info) {
+        if (info.ok) {
+            if (info.to) log('Entering ' + (info.level || 'a level') + ': ' + info.from + ' now goes through ' + info.to);
+            this.enteredUnmapped = '';
+        } else {
+            log('Entering ' + (info.level || 'a level') + ' on ' + info.from + ', which the meter could not relay');
+            this.enteredUnmapped = info.from;
+        }
+        this.dirty = true;
+    }
+
+    /**
+     * Asks the website whether this computer has a character in game. Used only to tell
+     * "logged in without the meter" apart from "not logged in yet".
+     */
+    async checkPresence() {
+        if (!this.gameContents || !this.gameOrigin || !/^http:/.test(this.gameOrigin)) return;
+        // A level change closes one connection and opens the next; don't ask in between.
+        if (this.hub && this.hub.all.some((r) => r.open.size > 0 || Date.now() - r.lastPacketAt < 20000)) {
+            this.presence = { checkedAt: 0, playing: false };
+            return;
+        }
+        try {
+            const body = await fetchBuffer(this.gameOrigin + '/api/presence/self', 8000, [200, 404, 409]);
+            const data = body.length ? JSON.parse(body.toString('utf8')) : null;
+            this.presence = { checkedAt: Date.now(), playing: Boolean(data && data.session) };
+        } catch (_e) {
+            this.presence = { checkedAt: Date.now(), playing: false };
+        }
+        this.dirty = true;
     }
 
     /* ---------- data ---------- */
@@ -207,12 +323,11 @@ class DpsOverlay {
         return path.join(this.app.getPath('userData'), 'dps-powers-cache.json');
     }
 
-    async loadLivePowers(origin) {
-        if (!origin || this.livePowersFrom === origin) {
+    async loadLivePowers(url) {
+        if (!url || this.livePowersFrom === url) {
             return;
         }
-        this.livePowersFrom = origin;
-        const url = origin.replace(/\/$/, '') + '/p/cbq/Game.swz';
+        this.livePowersFrom = url;
         try {
             const buf = await fetchBuffer(url, 20000);
             const data = dataFromSwz(buf, url + ' (' + new Date().toISOString().slice(0, 10) + ')');
@@ -225,7 +340,7 @@ class DpsOverlay {
             }
             log('Spell data loaded from ' + url + ' (' + data.powers.length + ' powers)');
         } catch (err) {
-            log('Live spell data unavailable (' + ((err && err.message) || err) + '); using ' + this.powersInfo.source);
+            log('Live spell data unavailable from ' + url + ' (' + ((err && err.message) || err) + '); using ' + this.powersInfo.source);
         }
         this.dirty = true;
     }
@@ -239,6 +354,15 @@ class DpsOverlay {
     }
 
     followConnection(relay, tracker) {
+        log('Game connected through the meter (' + tracker.label + ')');
+        tracker.on('closed', () =>
+            log(
+                'Connection closed (' + tracker.label + ', ' + tracker.packets.up + ' packets out, ' + tracker.packets.down + ' in' +
+                    (tracker.dummyTicksKept ? ', ' + tracker.dummyTicksKept + ' training-dummy DoT ticks counted and kept from the server' : '') +
+                    ')'
+            )
+        );
+        tracker.on('character', ({ id, name }) => log('Your character: ' + name + ' (entity ' + id + ')'));
         tracker.on('character', ({ name }) => {
             if (name && name !== this.character) {
                 this.character = name;
@@ -255,9 +379,6 @@ class DpsOverlay {
         tracker.on('enterWorld', (w) => {
             this.level = w.level || this.level;
             this.meter.noteLevel(this.level);
-            const mapped = this.relays.some((r) => r.upstreamHost === String(w.host).toLowerCase() && r.upstreamPort === w.port);
-            this.enteredUnmapped = mapped ? '' : w.host + ':' + w.port;
-            if (!mapped) log('The game was sent to ' + w.host + ':' + w.port + ', which the meter does not relay.');
             this.dirty = true;
         });
     }
@@ -277,7 +398,12 @@ class DpsOverlay {
             } catch (_e) {
                 this.gameOrigin = '';
             }
-            this.loadLivePowers(this.gameOrigin);
+            // Normally the game's own request for Game.swz names the file; this is the fallback.
+            setTimeout(() => {
+                if (!this.livePowersFrom && this.gameOrigin) {
+                    this.loadLivePowers(this.gameOrigin + '/p/' + (this.swfFv || 'cbp') + '/Game.swz');
+                }
+            }, 30000);
             this.dirty = true;
         });
         wc.on('destroyed', () => {
@@ -330,21 +456,36 @@ class DpsOverlay {
     }
 
     linkStatus() {
-        const failed = this.relays.filter((r) => !r.listening && r.error);
         if (!this.enabled) return { state: 'off', text: 'The meter is off.' };
-        if (failed.length) {
-            return { state: 'error', text: "Couldn't open the meter's local port " + failed[0].listenPort + ' (' + failed[0].error + '). Restart the launcher.' };
+        const proxy = this.proxy;
+        if (proxy && !proxy.listening && proxy.error) {
+            return { state: 'error', text: "Couldn't open the meter's local port " + proxy.listenPort + ' (' + proxy.error + '). Restart the launcher.' };
+        }
+        if (this.hubError) {
+            return { state: 'error', text: "Couldn't open a local port for the game connection (" + this.hubError + ').' };
         }
         if (this.enteredUnmapped) {
-            return { state: 'error', text: 'This level runs on ' + this.enteredUnmapped + ', which the meter can’t read.' };
+            return { state: 'error', text: 'This level runs on ' + this.enteredUnmapped + ', which the meter couldn’t relay.' };
         }
-        const open = this.relays.reduce((n, r) => n + r.open.size, 0);
-        const ever = this.relays.reduce((n, r) => n + r.connections, 0);
+        const relays = this.hub ? this.hub.all : [];
+        const open = relays.reduce((n, r) => n + r.open.size, 0);
         if (open > 0) return { state: 'live', text: this.character ? 'Reading hits for ' + this.character : 'Connected, waiting for your character' };
-        if (ever === 0 && this.gameLoadedAt && Date.now() - this.gameLoadedAt > 45000) {
-            return { state: 'error', text: 'The game connected without passing through the meter. Restart the launcher.' };
+        const swf = proxy && proxy.swf;
+        if (swf && !swf.ok) {
+            return { state: 'error', text: "Couldn't point the game at the meter (" + swf.error + ').' };
         }
-        return { state: 'waiting', text: 'Waiting for the game to connect' };
+        if (!swf && this.gameLoadedAt && Date.now() - this.gameLoadedAt > 20000) {
+            const https = /^https:/.test(this.gameOrigin);
+            return {
+                state: 'error',
+                text: https ? 'The meter reads the http:// game page only; this one is https.' : 'The game loaded without the meter. Restart the launcher.'
+            };
+        }
+        if (this.presence.playing && Date.now() - this.presence.checkedAt < 30000) {
+            return { state: 'error', text: 'Your character is in game, but not through the meter. Restart the launcher.' };
+        }
+        const ever = relays.reduce((n, r) => n + r.connections, 0);
+        return { state: 'waiting', text: ever ? 'Waiting for the game to reconnect' : 'Log in to start reading hits' };
     }
 
     /* ---------- commands from the overlay and hotkeys ---------- */
@@ -479,4 +620,4 @@ class DpsOverlay {
     }
 }
 
-module.exports = { DpsOverlay, gameTargets, findFreePorts, VERSION };
+module.exports = { DpsOverlay, webHosts, findFreePorts, VERSION };

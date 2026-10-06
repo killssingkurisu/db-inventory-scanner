@@ -129,17 +129,40 @@ function main() {
     console.log('Start the launcher as usual. F6 starts or stops the timer, F7 resets it, F8 hides the panels.');
 }
 
+function checks(file, ok) {
+    try {
+        return ok(asar.readArchive(file));
+    } catch (err) {
+        console.error(err);
+        return false;
+    }
+}
+
+/**
+ * Writes `data` over `file` in place. Used when another program has the file open, which on
+ * Windows stops it being replaced by a rename but not written to. A shorter archive leaves old
+ * bytes after its end if the file can't be cut short; the asar header says where the data
+ * ends, so those are never read.
+ */
+function overwriteInPlace(file, data) {
+    const fd = fs.openSync(file, 'r+');
+    try {
+        fs.writeSync(fd, data, 0, data.length, 0);
+        try {
+            fs.ftruncateSync(fd, data.length);
+        } catch (_e) {
+            // left as is, see above
+        }
+        fs.fsyncSync(fd);
+    } finally {
+        fs.closeSync(fd);
+    }
+}
+
 function writeVerified(archive, changes, asarPath, ok) {
     const tmp = asarPath + '.dps-tmp';
     asar.writeArchive(archive, changes, tmp);
-    let good = false;
-    try {
-        good = ok(asar.readArchive(tmp));
-    } catch (err) {
-        good = false;
-        console.error(err);
-    }
-    if (!good) {
+    if (!checks(tmp, ok)) {
         try {
             fs.unlinkSync(tmp);
         } catch (_e) {
@@ -147,7 +170,28 @@ function writeVerified(archive, changes, asarPath, ok) {
         }
         fail('The rebuilt app.asar did not check out; the launcher was left as it was.');
     }
-    fs.renameSync(tmp, asarPath);
+    try {
+        fs.renameSync(tmp, asarPath);
+        return;
+    } catch (err) {
+        if (!['EPERM', 'EBUSY', 'EACCES'].includes(err.code)) throw err;
+    }
+    // Something else holds app.asar open (an Electron app that read it, an antivirus scan).
+    console.log('app.asar is open in another program, so it is written in place.');
+    const data = fs.readFileSync(tmp);
+    const original = fs.readFileSync(asarPath);
+    try {
+        overwriteInPlace(asarPath, data);
+    } catch (err) {
+        fs.unlinkSync(tmp);
+        fail("Couldn't write app.asar (" + err.message + '); the launcher was left as it was. Close every program that might have it open and try again.');
+    }
+    if (!checks(asarPath, ok)) {
+        overwriteInPlace(asarPath, original);
+        fs.unlinkSync(tmp);
+        fail('The written app.asar did not check out, so the original was put back. Close every program that might have it open and try again.');
+    }
+    fs.unlinkSync(tmp);
 }
 
 main();

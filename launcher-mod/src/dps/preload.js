@@ -363,7 +363,7 @@ class Overlay {
 
     saveCompact() {
         const p = this.compactPos || { x: 16, y: 16 };
-        ipcRenderer.invoke('dbdps:cmd', 'compact', { x: p.x, y: p.y, open: this.compactOpen !== false }).catch(() => {});
+        ipcRenderer.invoke('dbdps:cmd', 'compact', { x: p.x, y: p.y, open: this.compactOpen === true }).catch(() => {});
     }
 
     /* ---------- layout ---------- */
@@ -407,11 +407,11 @@ class Overlay {
         this.reveal.hidden = !hidden;
         if (this.compactOpen === undefined && this.view) {
             const c = this.view.settings.compact || {};
-            this.compactOpen = c.open !== false;
+            this.compactOpen = c.open === true;
             this.compactPos = { x: Number(c.x) || 16, y: Number(c.y) || 16 };
         }
         this.compactPos = this.compactPos || { x: 16, y: 16 };
-        const open = this.compactOpen !== false;
+        const open = this.compactOpen === true;
         this.fight.hidden = hidden || !open;
         this.spellPanel.hidden = hidden || !open;
         this.el.pill.hidden = hidden || open;

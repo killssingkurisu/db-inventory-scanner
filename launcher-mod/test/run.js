@@ -6,6 +6,8 @@
  * and the asar installer against a copy of a launcher archive.
  *
  *   node launcher-mod/test/run.js [path/to/app.asar]
+ *
+ * DBDPS_LIVE_SWF=<DungeonBlitz.swf> also patches a real client and checks what changed.
  */
 
 const assert = require('assert');
@@ -15,7 +17,10 @@ const os = require('os');
 const path = require('path');
 
 const P = require('../src/dps/protocol');
-const { GameRelay, CombatTracker } = require('../src/dps/relay');
+const http = require('http');
+const { GameRelay, RelayHub, CombatTracker, POLICY } = require('../src/dps/relay');
+const { WebProxy } = require('../src/dps/httpProxy');
+const swfpatch = require('../src/dps/swfpatch');
 const { DpsMeter } = require('../src/dps/meter');
 const { PowerTable, parseScaling } = require('../src/dps/powers');
 const exporter = require('../src/dps/exporter');
@@ -174,6 +179,30 @@ async function main() {
         assert.deepStrictEqual([d.targetId, d.sourceId, d.powerId, d.amount], [301, 12, 993, 1500]);
     });
 
+    await check('0x21 rewrite: new host and port, every other field kept', () => {
+        for (const [host, port] of [['127.0.0.1', 13690], ['a-much-longer-host-name.example.org', 3], ['h', 65535]]) {
+            const orig = pkt.enterWorld('dungeonblitzr.theminesa.studio', 8080, 'GoblinRiver').subarray(4);
+            const r = P.rewriteEnterWorld(orig, host, port);
+            assert.deepStrictEqual([r.host, r.port], ['dungeonblitzr.theminesa.studio', 8080]);
+            const a = P.parseEnterWorld(orig);
+            const b = P.parseEnterWorld(r.payload);
+            assert.deepStrictEqual([b.host, b.port], [host, port]);
+            assert.deepStrictEqual([b.swf, b.mapLevel, b.baseLevel, b.level, b.alter, b.isDungeon], [a.swf, a.mapLevel, a.baseLevel, a.level, a.alter, a.isDungeon]);
+            const back = P.rewriteEnterWorld(r.payload, a.host, a.port).payload;
+            assert.ok(back.subarray(0, orig.length).equals(orig), 'rewriting back gives the original bits');
+            assert.ok(back.subarray(orig.length).every((x) => x === 0), 'plus zero padding at most');
+        }
+        const w = new P.BitWriter();
+        for (const v of [0, 1, 3, 4, 255, 8080, 2 ** 30 - 1]) w.uint(v);
+        const r = new P.BitReader(w.toBuffer());
+        for (const v of [0, 1, 3, 4, 255, 8080, 2 ** 30 - 1]) assert.strictEqual(r.uint(), v);
+        const t = new BitWriter();
+        for (const v of [0, 1, 3, 4, 255, 8080]) t.uint(v);
+        const w2 = new P.BitWriter();
+        for (const v of [0, 1, 3, 4, 255, 8080]) w2.uint(v);
+        assert.ok(w2.toBuffer().equals(t.buffer()), "the writer picks the client's widths");
+    });
+
     await check('splitter: any chunking, policy exchange skipped, bad packet ignored', () => {
         const stream = Buffer.concat([
             Buffer.from('<policy-file-request/>\0'),
@@ -197,7 +226,9 @@ async function main() {
         assert.deepStrictEqual([p.group, p.rank, p.label], ['PoisonStrike', 10, 'Poison Strike']);
         assert.strictEqual(table.statFor(993, 'hit'), 'attack');
         assert.strictEqual(table.statFor(993, 'dot'), 'expertise');
-        assert.strictEqual(table.statFor(984, 'dot'), 'attack', 'only the current rank counts, not "Next rank"');
+        assert.strictEqual(table.get(984).scaling.dot.stat, 'attack', 'only the current rank counts, not "Next rank"');
+        assert.strictEqual(table.statFor(984, 'dot'), 'expertise', 'every DoT tick scales with Expertise');
+        assert.strictEqual(table.statFor(3, 'dot'), 'expertise');
         assert.strictEqual(table.statFor(500, 'hit'), 'expertise', 'elemental without a Stats line');
         assert.strictEqual(table.statFor(3, 'hit'), 'attack');
         assert.strictEqual(table.statFor(999999, 'hit'), 'unknown');
@@ -421,6 +452,194 @@ async function main() {
         });
         relay.close();
     });
+
+    await check("Flash's policy question is answered locally and never reaches the server", async () => {
+        let reached = 0;
+        const upstream = net.createServer((sock) => {
+            reached += 1;
+            sock.destroy();
+        });
+        await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+        const relay = new GameRelay({ listenPort: 0, upstreamHost: '127.0.0.1', upstreamPort: upstream.address().port });
+        await relay.listen();
+        const answer = await new Promise((resolve) => {
+            const c = net.connect(relay.listenPort, '127.0.0.1', () => {
+                c.write('<policy-file-');
+                setTimeout(() => c.write('request/>\0'), 20);
+            });
+            const got = [];
+            c.on('data', (d) => got.push(d));
+            c.on('close', () => resolve(Buffer.concat(got).toString('latin1')));
+        });
+        assert.strictEqual(answer, POLICY);
+        assert.ok(answer.includes('to-ports="*"'));
+        assert.strictEqual(reached, 0);
+        assert.strictEqual(relay.connections, 0);
+        relay.close();
+        upstream.close();
+    });
+
+    await check('enter world sends the client to a new relay for the next server, which also counts hits', async () => {
+        // A login server that sends the client on to a game server, and the game server.
+        const gameGot = [];
+        const game = net.createServer((sock) => sock.on('data', (d) => gameGot.push(d)));
+        await new Promise((r) => game.listen(0, '127.0.0.1', r));
+        const gamePort = game.address().port;
+        const login = net.createServer((sock) => {
+            sock.once('data', () => {
+                sock.write(pkt.spawn(301, 'GoblinBrute', false, 2));
+                sock.end(pkt.enterWorld('127.0.0.1', gamePort, 'GoblinRiver')); // and hang up, as the server does
+            });
+        });
+        await new Promise((r) => login.listen(0, '127.0.0.1', r));
+        const hub = new RelayHub({ portBase: 0 }); // any free ports
+        const loginRelay = await hub.relayFor('127.0.0.1', login.address().port);
+        const m = new DpsMeter({ powers: table });
+        m.start();
+        const redirects = [];
+        hub.on('connection', (_relay, tr) => tr.on('damage', (e) => m.recordDamage(e)));
+        hub.on('redirect', (_relay, info) => redirects.push(info));
+
+        const c1 = net.connect(loginRelay.listenPort, '127.0.0.1');
+        const got1 = [];
+        c1.on('data', (d) => got1.push(d));
+        await new Promise((r) => c1.on('connect', r));
+        c1.write(pkt.fullUpdate(12, 'ksq', { isPlayer: true }));
+        await new Promise((r) => c1.on('close', r));
+        const frames = [];
+        new P.PacketSplitter((id, payload) => frames.push([id, payload])).push(Buffer.concat(got1));
+        assert.deepStrictEqual(frames.map((f) => f[0]), [0x0f, 0x21], 'both packets arrive, the second after the hang-up');
+        const w = P.parseEnterWorld(frames[1][1]);
+        assert.strictEqual(w.host, '127.0.0.1');
+        assert.notStrictEqual(w.port, gamePort, 'the client is sent to a relay, not the server');
+        assert.strictEqual(w.level, 'GoblinRiver');
+        const gameRelay = hub.find('127.0.0.1', gamePort);
+        assert.ok(gameRelay && gameRelay.listenPort === w.port);
+        assert.deepStrictEqual(redirects.map((r) => r.ok), [true]);
+
+        const c2 = net.connect(w.port, '127.0.0.1');
+        await new Promise((r) => c2.on('connect', r));
+        const script = Buffer.concat([pkt.fullUpdate(12, 'ksq', { isPlayer: true }), pkt.hit(301, 12, 4321, 993, false)]);
+        c2.write(script);
+        await new Promise((r) => setTimeout(r, 150));
+        assert.ok(Buffer.concat(gameGot).equals(script), 'the game server gets what the client sent');
+        assert.strictEqual(m.snapshot().totals.damage, 4321);
+        c2.destroy();
+        hub.close();
+        game.close();
+        login.close();
+    });
+
+    await check('DoT ticks on a training dummy are counted and kept from the server', async () => {
+        const toServer = [];
+        const upstream = net.createServer((sock) => sock.on('data', (d) => toServer.push(d)));
+        await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+        const relay = new GameRelay({ listenPort: 0, upstreamHost: '127.0.0.1', upstreamPort: upstream.address().port });
+        await relay.listen();
+        const m = new DpsMeter({ powers: table });
+        m.start();
+        relay.on('connection', (tr) => tr.on('damage', (e) => m.recordDamage(e)));
+        const c = net.connect(relay.listenPort, '127.0.0.1');
+        await new Promise((r) => c.on('connect', r));
+        const before = Buffer.concat([
+            pkt.fullUpdate(12, 'ksq', { isPlayer: true }),
+            pkt.fullUpdate(900, 'HomeDummy2', { team: 2 }),
+            pkt.hit(900, 12, 5000, 993, false)
+        ]);
+        const dummyTick = pkt.dot(900, 12, 993, 700);
+        const after = Buffer.concat([pkt.dot(301, 12, 993, 300), pkt.cast(12, 993)]);
+        const all = Buffer.concat([before, dummyTick, after]);
+        for (let i = 0; i < all.length; i += 3) {
+            c.write(all.subarray(i, i + 3));
+            await new Promise((r) => setTimeout(r, 1));
+        }
+        await new Promise((r) => setTimeout(r, 200));
+        assert.ok(Buffer.concat(toServer).equals(Buffer.concat([before, after])), 'the server gets everything but the dummy tick');
+        const s = m.snapshot();
+        assert.strictEqual(s.totals.damage, 6000);
+        assert.strictEqual(s.totals.dotDamage, 1000);
+        assert.deepStrictEqual(s.byStat, { attack: 5000, expertise: 1000, unknown: 0 });
+        assert.strictEqual(relay.dummyTicksKept, 1);
+        c.destroy();
+        relay.close();
+        upstream.close();
+    });
+
+    console.log('Web proxy');
+    await check('passes requests through and patches only DungeonBlitz.swf', async () => {
+        const seen = [];
+        const site = http.createServer((req, res) => {
+            const body = [];
+            req.on('data', (d) => body.push(d));
+            req.on('end', () => {
+                seen.push({ url: req.url, headers: req.headers, body: Buffer.concat(body).toString() });
+                if (req.url.startsWith('/p/cbp/DungeonBlitz.swf')) {
+                    res.writeHead(200, { 'content-type': 'application/x-shockwave-flash', 'cache-control': 'no-cache', etag: 'W/"1"' });
+                    res.end('ORIGINAL-SWF');
+                    return;
+                }
+                if (req.url === '/gone') {
+                    res.writeHead(404);
+                    res.end('nope');
+                    return;
+                }
+                res.setHeader('set-cookie', ['a=1; Path=/', 'b=2; Path=/']);
+                res.writeHead(200, { 'content-type': 'text/plain' });
+                res.write('chunk1-');
+                setTimeout(() => res.end('chunk2:' + req.method + ':' + Buffer.concat(body).toString()), 10);
+            });
+        });
+        await new Promise((r) => site.listen(0, '127.0.0.1', r));
+        const sitePort = site.address().port;
+        const proxy = new WebProxy({
+            listenPort: 0,
+            hosts: [{ host: '127.0.0.1', port: sitePort }],
+            patchSwf: async (buf) => ({ swf: Buffer.concat([Buffer.from('PATCHED-'), buf]), report: { ok: true } })
+        });
+        assert.ok(await proxy.listen());
+        const pport = proxy.server.address().port;
+        const ask = (method, url, headers, body, host) =>
+            new Promise((resolve, reject) => {
+                const req = http.request({ host: '127.0.0.1', port: pport, method, path: url, headers: Object.assign({ host: host || '127.0.0.1:' + sitePort }, headers) }, (res) => {
+                    const parts = [];
+                    res.on('data', (d) => parts.push(d));
+                    res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(parts).toString() }));
+                });
+                req.on('error', reject);
+                req.end(body);
+            });
+        const swf = await ask('GET', '/p/cbp/DungeonBlitz.swf?fv=cbp', { 'if-none-match': 'W/"1"', 'accept-encoding': 'gzip' });
+        assert.strictEqual(swf.status, 200);
+        assert.strictEqual(swf.body, 'PATCHED-ORIGINAL-SWF');
+        assert.strictEqual(swf.headers['cache-control'], 'no-store');
+        assert.strictEqual(swf.headers.etag, undefined);
+        assert.strictEqual(Number(swf.headers['content-length']), 'PATCHED-ORIGINAL-SWF'.length);
+        assert.strictEqual(seen[0].headers['if-none-match'], undefined, 'never "not modified" for the SWF');
+        assert.strictEqual(proxy.swf.ok, true);
+        const page = await ask('POST', '/api/thing', { cookie: 'x=1', 'content-type': 'text/plain' }, 'hello');
+        assert.strictEqual(page.body, 'chunk1-chunk2:POST:hello');
+        assert.deepStrictEqual(page.headers['set-cookie'], ['a=1; Path=/', 'b=2; Path=/']);
+        assert.strictEqual(seen[1].headers.cookie, 'x=1');
+        assert.strictEqual(seen[1].headers.host, '127.0.0.1:' + sitePort, 'the Host header goes on as it came');
+        assert.strictEqual((await ask('GET', '/gone')).status, 404);
+        assert.strictEqual((await ask('GET', '/', {}, undefined, 'elsewhere.example')).status, 502, 'other hosts are refused');
+        proxy.close();
+        site.close();
+    });
+
+    const liveSwf = process.env.DBDPS_LIVE_SWF;
+    if (liveSwf && fs.existsSync(liveSwf)) {
+        await check('patches the live DungeonBlitz.swf: login host and port only', () => {
+            const swf = fs.readFileSync(liveSwf);
+            const before = swfpatch.readLoginTarget(swf);
+            assert.ok(before && before.host && before.port, 'login target found');
+            const r = swfpatch.patchSwf(swf, { port: 13690 });
+            assert.strictEqual(r.report.ok, true);
+            assert.deepStrictEqual([r.report.hostPatches, r.report.portPatches, r.report.dummyDotPatches], [1, 1, 1]);
+            assert.deepStrictEqual(swfpatch.readLoginTarget(r.swf), { host: '127.0.0.1', port: 13690 });
+            assert.throws(() => swfpatch.patchSwf(swf, { port: 20000 }), /below 16384/);
+        });
+    }
 
     console.log('Installer');
     if (asarArg && fs.existsSync(asarArg)) {
