@@ -1,15 +1,15 @@
 # DB DPS Overlay
 
-A damage meter for the Dungeon Blitz: R launcher. It sits in the grey space to the left and right of the game and shows:
+A damage meter for the Dungeon Blitz: R launcher. It sits in the grey space to the left and right of the game, in three windows:
 
-- a timer you start and stop (F6), reset (F7) and hide (F8);
-- total damage, damage per second, casts, hits and crit rate, with a DPS line for the last minute;
-- **Scaling**: how much of your damage scales with Attack and how much with Expertise, how much came over time (DoTs) and from crits. A direct hit counts for the stat in its spell's Stats line ("1.49x attack"); every damage-over-time tick counts for Expertise, because the game puts your Expertise into each DoT when it lands (poison, bleed, burn, whichever spell applied it);
-- **Spells**: your equipped spells in hotbar order (slots 1 to 6, the same numbers as the Rotation strip; from your spell scan, or the hotbar spells you've used when there's no scan), each with its rank, share of your damage, casts, and on a click its DPS, hits, crit rate, average and biggest hit, DoT damage and its Stats line. Basic attacks, rune procs and pets are listed under *Other damage*;
-- **Rotation**: a thin strip between the game and the Spells panel that starts small and grows downward with every cast, in the order they went out, repeats included. Spells show as their hotbar slot from the game's data, 1 to 6 (1, 2, 3, 4, E, Q), with the damage that cast did, its DoT ticks included as they land (cyan when it crit). Basic attacks in a row share one line, **MA** (melee attack) or **RA** (ranged attack), with a count that goes up with every hit they land (MA3, RA12) and the run's total damage. A pause of 1.5 s or more shows as a gap; hovering a line gives the spell's name and numbers;
+- **Damage Meter** (top left): a timer you start and stop (F6), reset (F7) and hide (F8); DPS, total damage, casts, hits and crit rate; **DPS over time** for the whole fight (the DPS over the last 5 seconds at each moment, and your running average); **Scaling**: how much of your damage scales with Attack and how much with Expertise, how much came over time (DoTs) and from crits. A direct hit counts for the stat in its spell's Stats line ("1.49x attack"); every damage-over-time tick counts for Expertise, because the game puts your Expertise into each DoT when it lands (poison, bleed, burn, whichever spell applied it);
+- **Rotation** (under the Damage Meter): your casts in order, as one line of text that wraps, like `MA2 s2 s3 RA1 s4 s1 MA2`. `s3` is the spell in hotbar slot 3 (s1 to s6 are keys 1, 2, 3, 4, E, Q, from the game's own data); `MA` (melee attack) and `RA` (ranged attack) are basic attacks in a row, with the number of hits they landed. Hover any part for the spell, the time and its damage;
+- **Spells** (top right, as wide as the Damage Meter): your hotbar spells by slot (from your spell scan, or the ones you've used when there's no scan), each with its rank, share of your damage, casts, and on a click its DPS, hits, crit rate, average and biggest hit, DoT damage and its Stats line. Basic attacks, rune procs and pets are listed under *Other damage*;
 - **Export…** to a JSON file in the GO style (everything: spells, the rotation, every hit) or a CSV table for spreadsheets, and **Copy summary** for chat.
 
-Hits and casts only count while the timer runs. Turn on *Start on first hit* to start it with your first hit instead. F8 (or ×) hides the panels and leaves a small *Damage meter* tab in the top-left corner of the grey area to bring them back.
+Drag any window by its title to move it, and resize it from its bottom-right corner; it stays where you put it. *Reset layout* (in the Damage Meter's status lines) puts them all back.
+
+Hits and casts only count while the timer runs. Turn on *Start on first hit* to start it with your first hit instead. F8 (or ×) hides the windows and leaves a small *Damage Meter* tab in the top-left corner of the grey area to bring them back.
 
 ## Install
 
@@ -53,8 +53,9 @@ The JSON export is laid out the way GOOD (the Genshin Open Object Description th
 - `fight`: `startedAt`, `stoppedAt`, `durationMs`, `duration`, `levels`, `damage`, `dps`, `casts`, `hits`, `crits`, `critRate`, `critDamage`, `dotDamage`, `dotTicks`, `summonDamage`, `outsideTimer`.
 - `distribution`: `byStat` (attack, expertise, unknown), `byKind` (direct, dot), `crits`, each with `damage` and `share`.
 - `spells[]`: `key` (the ability, e.g. `PoisonStrike`, or the power's base name for basic attacks and procs, e.g. `RapierMelee`), `name`, `rank`, `slotKey` (hotbar key), `equipped`, `casts`, `hits`, `crits`, `critRate`, `damage`, `share`, `dps`, `directDamage`, `dotDamage`, `dotTicks`, `averageHit`, `biggestHit`, `damageByStat`, `scaling`, `powerIds`.
+- `rotation.text`: the Rotation window's line, e.g. `"MA2 s2 s3 RA1 s4 s1 MA2"`.
 - `rotation.steps[]`: the casts in order as DPS Calculator combo steps: ability keys, and one `"basic"` per basic attack.
-- `rotation.casts[]`: the lines of the Rotation strip in order, with `index`, `atMs`, `at`, `endMs`, `key` (ability key, or `basic`), `name`, `kind` (`spell`, `melee`, `ranged`, `other`), `label` (as shown: `1`…`6`, `MA3`, `RA12`), `slot` (1–6) and `slotKey` (`1`, `2`, `3`, `4`, `E`, `Q`), `casts` (basic attacks in the run), `rank`, `powerId`, `damage`, `directDamage`, `dotDamage`, `dotTicks`, `hits`, `crits`. A line is credited with its power's hits and DoT ticks until that power is cast again.
+- `rotation.casts[]`: the parts of the Rotation line in order, with `index`, `atMs`, `at`, `endMs`, `key` (ability key, or `basic`), `name`, `kind` (`spell`, `melee`, `ranged`, `other`), `label` (as shown: `s1`…`s6`, `MA3`, `RA12`), `slot` (1–6) and `slotKey` (`1`, `2`, `3`, `4`, `E`, `Q`), `casts` (basic attacks in the run), `rank`, `powerId`, `damage`, `directDamage`, `dotDamage`, `dotTicks`, `hits`, `crits`. Each part is credited with its power's hits and DoT ticks until that power is cast again.
 - `targets[]`, `damagePerSecond[]` (one entry per second of the timer), `hits[]` (`atMs`, `powerId`, `damage`, `crit`, `kind`, `target`, `summon`), `notes`.
 
 The CSV has the spell table, the fight totals and the rotation, one cast per row.

@@ -98,7 +98,7 @@ function view(m, extra) {
             link: { state: 'live', text: 'Reading hits for hgruhgkgn' },
             scan: { file: 'DB spells hgruhgkgn.json', scannedAt: '2026-10-06T15:02:00Z', character: 'hgruhgkgn', spells: 12, hotbar: 6 },
             powers: { source: 'bundled', count: table.size },
-            settings: { autoStart: false, hidden: false, compact: { x: 20, y: 20, open: true } },
+            settings: { autoStart: false, hidden: false, layout: { rects: {} } },
             lastExport: ''
         },
         extra || {}
@@ -151,7 +151,8 @@ const PAGE = (bg) => `<!DOCTYPE html><html><head><style>
         { name: '2k-150pct-idle-noscan', w: 1707, h: 889, dpr: 1.5, v: view(new DpsMeter({ powers: table }), { scan: null, link: { state: 'waiting', text: 'Waiting for the game to connect' } }) },
         { name: '1080p-100pct', w: 1920, h: 1009, dpr: 1, v: view(fight) },
         { name: '1200x800-compact', w: 1184, h: 761, dpr: 1, v: view(fight) },
-        { name: '2k-150pct-hidden', w: 1707, h: 889, dpr: 1.5, v: view(fight, { settings: { autoStart: false, hidden: true, compact: {} } }) }
+        { name: '2k-150pct-hidden', w: 1707, h: 889, dpr: 1.5, v: view(fight, { settings: { autoStart: false, hidden: true, layout: { rects: {} } } }) },
+        { name: '2k-150pct-moved', w: 1707, h: 889, dpr: 1.5, v: view(fight, { settings: { autoStart: false, hidden: false, layout: { rects: { spells: { x: 1180, y: 120, w: 260, h: 420 }, rotation: { x: 330, y: 560, w: 520, h: 0 } } } } }) }
     ];
     for (const s of shots) {
         const ctx = await browser.newContext({ viewport: { width: s.w, height: s.h }, deviceScaleFactor: s.dpr });
@@ -167,6 +168,15 @@ const PAGE = (bg) => `<!DOCTYPE html><html><head><style>
             // Open one spell's details, the way a click would.
             await page.mouse.click(1707 - 100, 120);
             await page.waitForTimeout(100);
+        }
+        if (s.name === '2k-150pct-moved') {
+            // Drag the Damage Meter by its title a little to the right and down.
+            await page.mouse.move(60, 22);
+            await page.mouse.down();
+            await page.mouse.move(120, 60, { steps: 5 });
+            await page.mouse.up();
+            await page.waitForTimeout(150);
+            console.log('  last command:', await page.evaluate(() => window.__lastCmd));
         }
         await page.waitForTimeout(200);
         const file = path.join(outDir, s.name + '.png');

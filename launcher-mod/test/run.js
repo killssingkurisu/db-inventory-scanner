@@ -335,6 +335,26 @@ async function main() {
         assert.strictEqual(s.equipped[0].scaling, '1.49x attack, 2x Expertise/s (5s)');
     });
 
+    await check('DPS over time: buckets of the whole fight and the running average', () => {
+        let now = 0;
+        const m = new DpsMeter({ powers: table, now: () => now });
+        m.start();
+        for (let sec = 0; sec < 200; sec++) {
+            now = sec * 1000 + 500;
+            m.recordDamage({ kind: 'hit', powerId: 3, damage: sec < 100 ? 1000 : 3000 });
+        }
+        now = 200000;
+        m.stop();
+        const g = m.snapshot().dpsSeries;
+        assert.strictEqual(g.bucketSec, 3, '200 s in at most 90 points');
+        assert.strictEqual(g.perSecond.length, 67);
+        assert.strictEqual(g.perSecond[0], 1000);
+        assert.strictEqual(g.perSecond[66], 3000);
+        assert.strictEqual(g.perSecond[34], 2600, 'seconds 102-104: 5-second windows of 2200, 2600 and 3000');
+        assert.strictEqual(g.running[66], 2000, 'the last running value is the fight DPS');
+        assert.strictEqual(g.peak, 3000);
+    });
+
     console.log('Export');
     await check('JSON, CSV and summary agree with the meter', () => {
         let now = 0;
@@ -366,10 +386,10 @@ async function main() {
         const sum = exporter.toSummary(m.report(), meta);
         assert.ok(sum.includes('400 DPS, 4,000 damage, 2 casts, 1 hits (100% crit)'), sum);
         assert.ok(sum.includes('1. Poison Strike r10: 4,000 (100%), 2 casts'), sum);
-        assert.ok(sum.includes('Rotation: 1 1'), sum);
+        assert.ok(sum.includes('Rotation: s1 s1'), sum);
     });
 
-    await check('rotation: spells by hotbar slot, basic attacks as MA/RA runs counted by hits, DoTs per cast', () => {
+    await check('rotation: spells as s<slot>, basic attacks as MA/RA runs counted by hits, DoTs per cast', () => {
         let now = 0;
         const m = new DpsMeter({ powers: table, now: () => now });
         m.start();
@@ -397,7 +417,8 @@ async function main() {
         m.recordCast({ powerId: 993 });
         m.recordDamage({ kind: 'dot', powerId: 993, damage: 600 }); // after the recast: the new cast's
         const r = m.snapshot().rotation;
-        assert.deepStrictEqual(r.entries.map((e) => e.badge), ['MA3', '1', 'RA2', '5', '1'], 'the missed melee run is left out');
+        assert.deepStrictEqual(r.entries.map((e) => e.badge), ['MA3', 's1', 'RA2', 's5', 's1'], 'the missed melee run is left out');
+        assert.strictEqual(r.text, 'MA3 s1 RA2 s5 s1');
         assert.deepStrictEqual(r.entries.map((e) => e.damage), [300, 6600, 145, 0, 600]);
         assert.deepStrictEqual(r.entries.map((e) => e.casts), [2, 1, 2, 1, 1]);
         assert.deepStrictEqual([r.entries[1].hits, r.entries[1].dotDamage, r.entries[0].crits], [2, 500, 1]);
@@ -407,12 +428,15 @@ async function main() {
         assert.deepStrictEqual(s.equipped.map((v) => [v.key, v.slot, v.hotkey]), [['PoisonStrike', 1, '1'], ['FireBolt', 5, 'E']], 'without a scan, used hotbar spells in slot order');
         const j = exporter.toJson(m.report(), { source: 't' });
         assert.deepStrictEqual(j.rotation.steps, ['basic', 'basic', 'PoisonStrike', 'basic', 'basic', 'FireBolt', 'PoisonStrike']);
-        assert.deepStrictEqual(j.rotation.casts.map((c) => c.label), ['MA3', '1', 'RA2', '5', '1']);
+        assert.deepStrictEqual(j.rotation.casts.map((c) => c.label), ['MA3', 's1', 'RA2', 's5', 's1']);
+        assert.strictEqual(j.rotation.text, 'MA3 s1 RA2 s5 s1');
         assert.deepStrictEqual([j.rotation.casts[0].casts, j.rotation.casts[0].hits, j.rotation.casts[3].slotKey], [2, 3, 'E']);
         const csv = exporter.toCsv(m.report(), { character: 'ksq' });
         assert.ok(csv.includes('\r\nRotation,Time (s),Shown as,Spell,Kind,Casts,Damage'), csv);
-        assert.ok(csv.includes('\r\n2,0.9,1,Poison Strike,spell,1,6600,6100,500,2,0\r\n'), csv);
-        assert.ok(exporter.toSummary(m.report(), {}).includes('Rotation: MA3 1 RA2 5 1'));
+        assert.ok(csv.includes('\r\n2,0.9,s1,Poison Strike,spell,1,6600,6100,500,2,0\r\n'), csv);
+        assert.ok(exporter.toSummary(m.report(), {}).includes('Rotation: MA3 s1 RA2 s5 s1'));
+        const g = m.snapshot().dpsSeries;
+        assert.deepStrictEqual([g.bucketSec, g.seconds, g.perSecond.length], [1, 2, 2], 'the second in progress is left out');
         m.reset();
         assert.strictEqual(m.snapshot().rotation.count, 0);
     });

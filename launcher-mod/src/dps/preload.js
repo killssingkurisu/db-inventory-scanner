@@ -1,24 +1,31 @@
 'use strict';
 
 /**
- * The DPS overlay on the game page: two panels in the grey gutters beside the game's 3:2
- * picture (the page gives the whole window to Flash and the game clips itself to a centred
- * 3:2 box, see the page's #game-container comment), or one movable card when the window is
- * too narrow for gutters.
+ * The DPS overlay on the game page: three windows in the grey gutters beside the game's 3:2
+ * picture (the page gives the whole window to Flash and the game clips itself to a centred 3:2
+ * box, see the page's #game-container comment).
  *
- * Runs as a session preload, so it also loads in the launcher's own window; it only acts on
- * an http(s) page that holds the game's object.
+ *   Damage Meter  left gutter, top            Spells  right gutter, top
+ *   Rotation      left gutter, under the meter
+ *
+ * Each window can be dragged by its title and resized from its bottom-right corner. Moved or
+ * resized windows keep their place (dps-overlay.json); "reset layout" puts them all back. When the window is too narrow for gutters they start stacked in
+ * the top corners instead.
+ *
+ * Runs as a session preload, so it also loads in the launcher's own window; it only acts on an
+ * http(s) page that holds the game's object.
  */
 
 const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
-const SIDE_MIN = 150; // narrowest gutter that still takes a panel, in CSS px
+const SIDE_MIN = 150; // narrowest gutter that still takes the windows, in CSS px
 const SIDE_MAX = 300;
-const ROT_W = 68; // the Rotation strip beside the Spells panel
-const ROT_GAP = 4;
+const FLOAT_W = 230; // window width when there are no gutters
 const SPELLS_NARROW = 150; // below this the Spells rows stack their numbers
+const GAP = 6;
+const PANELS = ['fight', 'rotation', 'spells'];
 
 const CSS = `
 #dbdps {
@@ -46,17 +53,21 @@ const CSS = `
   position: absolute; pointer-events: auto; display: flex; flex-direction: column; gap: 0.7em;
   background: var(--ink); border: 1px solid var(--brass); border-radius: 5px;
   box-shadow: inset 0 0 0 3px var(--ink-solid), inset 0 0 0 4px var(--brass-dim), 0 6px 18px rgba(0,0,0,0.35);
-  padding: 0.85em 0.85em 0.75em; overflow: hidden;
+  padding: 0.85em 0.85em 0.75em; overflow: hidden; min-width: 120px; min-height: 52px;
 }
+#dbdps .panel { resize: both; }
+#dbdps .panel.fight { overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; }
+#dbdps .panel.dragging { opacity: 0.92; box-shadow: inset 0 0 0 3px var(--ink-solid), inset 0 0 0 4px var(--brass-dim), 0 10px 26px rgba(0,0,0,0.5); }
 #dbdps .head { display: flex; align-items: center; gap: 0.45em; min-height: 1.5em; }
+#dbdps .head { cursor: move; }
 #dbdps .head h2 { font-size: 1.08em; font-weight: 700; flex: 1; letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#dbdps .head .sub { font-size: 0.85em; color: var(--parch-dim); font-weight: 400; }
+#dbdps .head .sub { font-size: 0.82em; color: var(--parch-dim); font-weight: 400; white-space: nowrap; }
 #dbdps .dot { width: 0.6em; height: 0.6em; border-radius: 50%; border: 1px solid var(--brass); flex: none; }
 #dbdps .dot.running { background: var(--alarm); border-color: var(--alarm); animation: dbdps-pulse 1.2s ease-in-out infinite; }
 #dbdps .dot.stopped { background: var(--brass); }
 @keyframes dbdps-pulse { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { #dbdps .dot.running { animation: none; } }
-#dbdps .iconbtn { all: unset; cursor: pointer; color: var(--parch-dim); width: 1.4em; height: 1.4em; display: grid; place-items: center; border-radius: 3px; font-size: 1.05em; }
+#dbdps .iconbtn { all: unset; cursor: pointer; color: var(--parch-dim); width: 1.4em; height: 1.4em; display: grid; place-items: center; border-radius: 3px; font-size: 1.05em; flex: none; }
 #dbdps .iconbtn:hover { color: var(--parch); background: var(--well); }
 #dbdps .clock { font-size: 2.05em; font-weight: 700; line-height: 1; }
 #dbdps .d { display: inline-block; width: 0.6em; text-align: center; }
@@ -77,7 +88,16 @@ const CSS = `
 #dbdps .facts { display: grid; grid-template-columns: 1fr auto; gap: 0.15em 0.6em; font-size: 0.95em; }
 #dbdps .facts dt { color: var(--parch-dim); }
 #dbdps .facts dd { text-align: right; font-weight: 700; }
-#dbdps svg.spark { width: 100%; height: 2.4em; display: block; }
+#dbdps .graph { display: flex; flex-direction: column; gap: 0.2em; }
+#dbdps .graph .glabel { display: flex; justify-content: space-between; align-items: baseline; font-size: 0.86em; color: var(--parch-dim); }
+#dbdps .graph .glabel b { color: var(--parch); font-weight: 700; }
+#dbdps .graph svg { width: 100%; height: 4.2em; display: block; background: rgba(42, 38, 18, 0.55); border-radius: 2px; }
+#dbdps .graph .gaxis { display: flex; justify-content: space-between; font-size: 0.76em; color: var(--parch-dim); }
+#dbdps .graph .gkey { display: flex; gap: 0.9em; font-size: 0.78em; color: var(--parch-dim); }
+#dbdps .graph .gkey span { display: inline-flex; align-items: center; gap: 0.35em; }
+#dbdps .graph .gkey .line { width: 1em; height: 0; border-top: 2px solid var(--cyan); }
+#dbdps .graph .gkey .area { width: 0.8em; height: 0.6em; background: rgba(0, 204, 255, 0.28); }
+#dbdps .graph .gempty { font-size: 0.82em; color: var(--parch-dim); padding: 0.4em 0; }
 #dbdps h3 { font-size: 0.95em; font-weight: 700; color: var(--parch); border-top: 1px solid var(--brass-dim); padding-top: 0.55em; }
 #dbdps .split { display: flex; height: 0.75em; border-radius: 2px; overflow: hidden; background: var(--well); }
 #dbdps .split i, #dbdps .bar i { display: block; height: 100%; }
@@ -102,9 +122,15 @@ const CSS = `
 #dbdps .status .link.error { color: #f0a59c; }
 #dbdps .status .link.error::before { background: var(--alarm); }
 #dbdps .status a { color: var(--parch); cursor: pointer; text-decoration: underline; text-decoration-color: var(--brass-dim); }
+#dbdps .rot { min-height: 0; flex: 1; overflow-y: auto; line-height: 1.6; word-spacing: 0.12em; scrollbar-width: thin; }
+#dbdps .rot::-webkit-scrollbar, #dbdps .spells::-webkit-scrollbar, #dbdps .panel.fight::-webkit-scrollbar { width: 6px; }
+#dbdps .rot::-webkit-scrollbar-thumb, #dbdps .spells::-webkit-scrollbar-thumb, #dbdps .panel.fight::-webkit-scrollbar-thumb { background: var(--brass-dim); border-radius: 3px; }
+#dbdps .rot .t { font-weight: 700; color: var(--parch); white-space: nowrap; }
+#dbdps .rot .t.basic { font-weight: 400; color: var(--parch-dim); }
+#dbdps .rot .t.crit { color: var(--cyan); }
+#dbdps .rot .t.last { text-decoration: underline; text-decoration-color: var(--brass); text-underline-offset: 0.2em; }
+#dbdps .rot .empty { font-size: 0.9em; }
 #dbdps .spells { min-height: 0; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.2em; margin-right: -0.4em; padding-right: 0.4em; }
-#dbdps .spells::-webkit-scrollbar { width: 6px; }
-#dbdps .spells::-webkit-scrollbar-thumb { background: var(--brass-dim); border-radius: 3px; }
 #dbdps .group { font-size: 0.85em; color: var(--parch-dim); padding: 0.5em 0 0.15em; }
 #dbdps .spell { display: flex; flex-direction: column; gap: 0.2em; padding: 0.35em 0.4em; border-radius: 3px; cursor: pointer; }
 #dbdps .spell:hover { background: rgba(42, 38, 18, 0.8); }
@@ -122,36 +148,6 @@ const CSS = `
 #dbdps .spell .more dt { color: var(--parch-dim); }
 #dbdps .spell .more dd { text-align: right; }
 #dbdps .spell .more .desc { grid-column: 1 / -1; color: var(--parch-dim); font-style: italic; padding-top: 0.2em; text-align: left; }
-#dbdps .empty { color: var(--parch-dim); font-size: 0.92em; padding: 0.3em 0.1em; }
-#dbdps .reveal {
-  all: unset; pointer-events: auto; position: absolute; left: 8px; top: 8px; box-sizing: border-box;
-  padding: 0.4em 0.75em; cursor: pointer; font-weight: 700; font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  background: var(--ink); color: var(--parch-dim); border: 1px solid var(--brass); border-radius: 4px;
-}
-#dbdps .reveal:hover { color: var(--parch); }
-#dbdps.compact .panel.fight { gap: 0.55em; }
-#dbdps.compact .grip { cursor: move; }
-#dbdps .pill { all: unset; pointer-events: auto; position: absolute; cursor: move; display: flex; gap: 0.6em; align-items: baseline;
-  background: var(--ink); border: 1px solid var(--brass); border-radius: 4px; padding: 0.35em 0.7em; }
-#dbdps .pill .num { color: var(--cyan); font-weight: 700; font-size: 1.15em; }
-#dbdps .panel.rotpanel { padding: 0.6em 0.3em 0.45em; gap: 0.4em; }
-#dbdps .rotpanel .head h2 { font-size: 0.86em; text-align: center; }
-#dbdps .rotpanel .count { font-size: 0.78em; color: var(--parch-dim); text-align: center; margin-top: -0.35em; }
-#dbdps .rot { min-height: 0; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.12em; scrollbar-width: none; }
-#dbdps .rot::-webkit-scrollbar { width: 0; }
-#dbdps .cast { display: flex; align-items: baseline; gap: 0.2em; padding: 0.12em 0.08em; border-radius: 2px; white-space: nowrap; overflow: hidden; transition: background 0.8s; }
-#dbdps .cast kbd { min-width: 1.5em; }
-#dbdps .cast.k-melee kbd, #dbdps .cast.k-ranged kbd { font-size: 0.7em; padding: 0 0.18em; }
-#dbdps .cast.k-melee kbd, #dbdps .cast.k-ranged kbd { border-color: var(--brass-dim); color: var(--parch-dim); background: transparent; }
-#dbdps .cast.k-other kbd { border-style: dashed; color: var(--parch-dim); }
-#dbdps .cast .amt { margin-left: auto; font-weight: 700; font-size: 0.92em; min-width: 0; overflow: hidden; }
-#dbdps .cast .amt.none { color: var(--parch-dim); font-weight: 400; }
-#dbdps .cast .amt.crit { color: var(--cyan); }
-#dbdps .cast.new { background: rgba(0, 204, 255, 0.18); transition: none; }
-#dbdps .gap { font-size: 0.72em; color: var(--parch-dim); text-align: center; display: flex; align-items: center; gap: 0.3em; padding: 0.1em 0; }
-#dbdps .gap::before, #dbdps .gap::after { content: ""; flex: 1; border-top: 1px solid var(--brass-dim); }
-#dbdps .rot .empty { font-size: 0.8em; text-align: center; padding: 0.3em 0; }
-@media (prefers-reduced-motion: reduce) { #dbdps .cast { transition: none; } }
 #dbdps .spellpanel.narrow { padding-left: 0.6em; padding-right: 0.6em; }
 #dbdps .spellpanel.narrow .spell { padding: 0.3em 0.25em; }
 #dbdps .spellpanel.narrow .spell .name { white-space: normal; overflow-wrap: anywhere; line-height: 1.15; }
@@ -159,6 +155,13 @@ const CSS = `
 #dbdps .spellpanel.narrow .spell .l2 { flex-wrap: wrap; gap: 0 0.45em; }
 #dbdps .spellpanel.narrow .spell .l2 .casts { margin-left: 0; }
 #dbdps .spellpanel.narrow .spell .more { font-size: 0.8em; gap: 0.05em 0.4em; }
+#dbdps .empty { color: var(--parch-dim); font-size: 0.92em; padding: 0.3em 0.1em; }
+#dbdps .reveal {
+  all: unset; pointer-events: auto; position: absolute; left: 8px; top: 8px; box-sizing: border-box;
+  padding: 0.4em 0.75em; cursor: pointer; font-weight: 700; font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background: var(--ink); color: var(--parch-dim); border: 1px solid var(--brass); border-radius: 4px;
+}
+#dbdps .reveal:hover { color: var(--parch); }
 `;
 
 function onGamePage() {
@@ -219,6 +222,11 @@ function clock(ms) {
     return (h ? h + ':' + pad(m % 60) : String(m)) + ':' + pad(s % 60) + '.' + (t % 10);
 }
 
+function mmss(sec) {
+    const s = Math.max(0, Math.round(sec));
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
 /** Digits in fixed cells, so a running number doesn't shuffle sideways. */
 function cells(text) {
     return String(text)
@@ -233,17 +241,29 @@ function when(iso) {
     return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ', ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
+function head(title, id, extra) {
+    return (
+        '<div class="head" data-drag="' + id + '">' +
+        (extra || '') +
+        '<h2>' + title + '</h2>' +
+        '<span class="sub" data-el="' + id + 'Sub"></span>' +
+        (id === 'fight' ? '<button class="iconbtn" data-cmd="hide" title="Hide (F8)">&#215;</button>' : '') +
+        '</div>'
+    );
+}
+
 /* ---------- the overlay ---------- */
 
 class Overlay {
     constructor() {
         this.view = null;
-        this.mode = '';
         this.open = new Set(); // spell keys with details shown
         this.rowEls = new Map();
         this.copiedAt = 0;
         this.drag = null;
+        this.resizing = null;
         this.rotStick = true; // keep the newest cast in view until the player scrolls up
+        this.layoutState = { rects: {} };
     }
 
     mount() {
@@ -255,15 +275,10 @@ class Overlay {
         const root = document.createElement('div');
         root.id = 'dbdps';
         root.setAttribute('role', 'complementary');
-        root.setAttribute('aria-label', 'Damage meter');
+        root.setAttribute('aria-label', 'Damage Meter');
         root.innerHTML = `
-          <section class="panel fight" aria-label="Fight">
-            <div class="head grip">
-              <span class="dot" data-el="dot"></span>
-              <h2>Damage meter</h2>
-              <button class="iconbtn" data-cmd="collapse" title="Shrink" hidden>&#8211;</button>
-              <button class="iconbtn" data-cmd="hide" title="Hide (F8)">&#215;</button>
-            </div>
+          <section class="panel fight" data-panel="fight" aria-label="Damage Meter">
+            ${head('Damage Meter', 'fight', '<span class="dot" data-el="dot"></span>')}
             <div class="clock" data-el="clock"></div>
             <div class="controls">
               <button class="btn primary" data-cmd="toggle" data-el="toggle">Start</button>
@@ -276,7 +291,12 @@ class Overlay {
               <dt>Hits</dt><dd data-el="hits"></dd>
               <dt>Crit rate</dt><dd data-el="crit"></dd>
             </dl>
-            <svg class="spark" data-el="spark" viewBox="0 0 120 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+            <div class="graph" title="Damage per second over the whole fight. Shaded: the DPS over the 5 seconds up to each moment. Line: your average so far, which ends at the big number above.">
+              <div class="glabel"><span>DPS over time</span><span data-el="gpeak"></span></div>
+              <svg data-el="spark" viewBox="0 0 120 36" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <div class="gaxis"><span>0:00</span><span data-el="gend"></span></div>
+              <div class="gkey"><span><i class="line"></i>average</span><span><i class="area"></i>last 5 s</span></div>
+            </div>
             <h3>Scaling</h3>
             <div class="split" data-el="split" title="Share of damage by the stat it scales with"></div>
             <div class="legend" data-el="legend"></div>
@@ -289,29 +309,29 @@ class Overlay {
             <button class="toggle" data-cmd="autoStart" data-el="auto" aria-pressed="false"><b></b>Start on first hit</button>
             <div class="status" data-el="status"></div>
           </section>
-          <section class="panel rotpanel" aria-label="Rotation">
-            <div class="head"><h2>Rotation</h2></div>
-            <p class="count" data-el="rotcount"></p>
-            <div class="rot" data-el="rot" aria-live="off"></div>
+          <section class="panel rotpanel" data-panel="rotation" aria-label="Rotation">
+            ${head('Rotation', 'rotation')}
+            <div class="rot" data-el="rot"></div>
           </section>
-          <section class="panel spellpanel" aria-label="Spells">
-            <div class="head"><h2>Spells</h2></div>
+          <section class="panel spellpanel" data-panel="spells" aria-label="Spells">
+            ${head('Spells', 'spells')}
             <div class="spells" data-el="spells"></div>
           </section>
-          <button class="reveal" data-cmd="show" hidden>Damage meter</button>
-          <button class="pill" data-el="pill" hidden></button>`;
+          <button class="reveal" data-cmd="show" hidden>Damage Meter</button>`;
         document.body.appendChild(root);
         this.root = root;
         this.el = {};
         for (const n of root.querySelectorAll('[data-el]')) this.el[n.dataset.el] = n;
-        this.fight = root.querySelector('.fight');
-        this.spellPanel = root.querySelector('.spellpanel');
-        this.rotPanel = root.querySelector('.rotpanel');
-        this.castEls = new Map();
+        this.panels = {
+            fight: root.querySelector('.fight'),
+            rotation: root.querySelector('.rotpanel'),
+            spells: root.querySelector('.spellpanel')
+        };
         this.reveal = root.querySelector('.reveal');
 
         // Clicks act on mousedown and never take focus away from the game, so the keyboard keeps
-        // driving the character after pressing a button here.
+        // driving the character after pressing a button here. The one exception is a window's
+        // resize corner, which needs the browser's own handling.
         root.addEventListener('mousedown', (e) => this.onMouseDown(e), true);
         window.addEventListener('mousemove', (e) => this.onDrag(e));
         window.addEventListener('mouseup', () => this.endDrag());
@@ -330,13 +350,25 @@ class Overlay {
         if (game && typeof game.focus === 'function') game.focus();
     }
 
+    /* ---------- input ---------- */
+
     onMouseDown(e) {
-        const target = e.target.closest('[data-cmd], .spell, .grip, .pill, a[data-act]');
-        if (!target || e.button !== 0) return;
+        if (e.button !== 0) return;
+        const panel = e.target.closest('.panel');
+        if (panel && e.target === panel) {
+            const r = panel.getBoundingClientRect();
+            if (e.clientX > r.right - 18 && e.clientY > r.bottom - 18) {
+                this.resizing = panel.dataset.panel; // the browser resizes it; saved on mouseup
+                return;
+            }
+        }
         e.preventDefault();
-        if (target.matches('.pill') || (target.matches('.grip') && this.mode === 'compact' && !e.target.closest('[data-cmd]'))) {
-            const box = (target.matches('.pill') ? target : this.fight).getBoundingClientRect();
-            this.drag = { dx: e.clientX - box.left, dy: e.clientY - box.top, moved: false, pill: target.matches('.pill'), x0: e.clientX, y0: e.clientY };
+        const target = e.target.closest('[data-cmd], .spell, a[data-act], [data-drag]');
+        if (!target) return;
+        if (target.matches('[data-drag]') && !e.target.closest('[data-cmd]')) {
+            const id = target.dataset.drag;
+            const box = this.panels[id].getBoundingClientRect();
+            this.drag = { id, dx: e.clientX - box.left, dy: e.clientY - box.top, x0: e.clientX, y0: e.clientY, moved: false };
             return;
         }
         if (target.matches('a[data-act]')) {
@@ -351,10 +383,6 @@ class Overlay {
             return;
         }
         const cmd = target.dataset.cmd;
-        if (cmd === 'collapse') {
-            this.setCompactOpen(false);
-            return;
-        }
         if (cmd === 'autoStart') {
             this.send('autoStart', !(this.view && this.view.settings.autoStart));
             return;
@@ -384,124 +412,126 @@ class Overlay {
     }
 
     onDrag(e) {
-        if (!this.drag) return;
-        if (Math.abs(e.clientX - this.drag.x0) + Math.abs(e.clientY - this.drag.y0) > 3) this.drag.moved = true;
-        if (!this.drag.moved) return;
-        const x = Math.max(0, Math.min(window.innerWidth - 60, e.clientX - this.drag.dx));
-        const y = Math.max(0, Math.min(window.innerHeight - 30, e.clientY - this.drag.dy));
-        this.compactPos = { x, y };
-        this.placeCompact();
+        const d = this.drag;
+        if (!d) return;
+        if (Math.abs(e.clientX - d.x0) + Math.abs(e.clientY - d.y0) > 3) d.moved = true;
+        if (!d.moved) return;
+        const p = this.panels[d.id];
+        p.classList.add('dragging');
+        const x = Math.max(0, Math.min(window.innerWidth - 60, e.clientX - d.dx));
+        const y = Math.max(0, Math.min(window.innerHeight - 30, e.clientY - d.dy));
+        p.style.left = Math.round(x) + 'px';
+        p.style.top = Math.round(y) + 'px';
+        if (d.id === 'fight') this.dockRotation();
     }
 
     endDrag() {
-        if (!this.drag) return;
         const d = this.drag;
         this.drag = null;
-        if (d.pill && !d.moved) {
-            this.setCompactOpen(true);
-            return;
+        if (d && d.moved) {
+            const p = this.panels[d.id];
+            p.classList.remove('dragging');
+            const old = this.layoutState.rects[d.id];
+            this.saveRect(d.id, {
+                x: parseInt(p.style.left, 10) || 0,
+                y: parseInt(p.style.top, 10) || 0,
+                w: p.offsetWidth,
+                h: old && old.h ? old.h : 0
+            });
         }
-        if (d.moved) this.saveCompact();
-        this.focusGame();
+        if (this.resizing) {
+            const id = this.resizing;
+            this.resizing = null;
+            const p = this.panels[id];
+            const r = p.getBoundingClientRect();
+            this.saveRect(id, { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
+        }
+        if (d) this.focusGame();
     }
 
-    setCompactOpen(open) {
-        this.compactOpen = open;
-        this.saveCompact();
+    saveRect(id, rect) {
+        this.layoutState.rects[id] = rect;
         this.layout();
-    }
-
-    saveCompact() {
-        const p = this.compactPos || { x: 16, y: 16 };
-        ipcRenderer.invoke('dbdps:cmd', 'compact', { x: p.x, y: p.y, open: this.compactOpen === true }).catch(() => {});
+        this.send('layout', { id, rect });
     }
 
     /* ---------- layout ---------- */
 
-    layout() {
-        if (!this.root) return;
+    geometry() {
         const W = window.innerWidth;
         const H = window.innerHeight;
         const boxW = Math.min(W, H * 1.5);
         const boxH = Math.min(H, W / 1.5);
         const gutter = (W - boxW) / 2;
         const top = (H - boxH) / 2;
-        const hidden = Boolean(this.view && this.view.settings.hidden);
-        this.root.hidden = false;
         const side = gutter >= SIDE_MIN;
-        this.mode = side ? 'side' : 'compact';
-        this.root.classList.toggle('compact', !side);
-        this.root.querySelector('[data-cmd="collapse"]').hidden = side;
-
-        if (side) {
-            const width = Math.min(SIDE_MAX, Math.floor(gutter - 16));
-            const fs = Math.max(11, Math.min(14, width / 14));
-            this.root.style.setProperty('--fs', fs.toFixed(1) + 'px');
-            // Right gutter: the Rotation strip against the game, then the Spells panel.
-            const rightAvail = Math.floor(gutter - 10);
-            const spellsW = Math.min(SIDE_MAX, rightAvail - ROT_W - ROT_GAP);
-            const rotLeft = W - gutter + 6;
-            const place = (panel, left, w) => {
-                Object.assign(panel.style, {
-                    left: Math.round(left) + 'px',
-                    top: Math.round(top + 8) + 'px',
-                    width: w + 'px',
-                    maxHeight: Math.round(boxH - 16) + 'px',
-                    height: ''
-                });
-                panel.hidden = hidden;
-            };
-            place(this.fight, gutter - 8 - width, width);
-            place(this.rotPanel, rotLeft, ROT_W);
-            place(this.spellPanel, rotLeft + ROT_W + ROT_GAP, spellsW);
-            this.spellPanel.classList.toggle('narrow', spellsW < SPELLS_NARROW);
-            this.el.pill.hidden = true;
-            // Hidden: just a "Damage meter" tab, in the top-left corner of the left gutter.
-            this.reveal.hidden = !hidden;
-            Object.assign(this.reveal.style, { left: Math.max(4, Math.round(gutter - 8 - width)) + 'px', top: Math.round(top + 8) + 'px', maxWidth: width + 'px' });
-            return;
-        }
-
-        // Compact: one card the player can move, or a small pill when shrunk.
-        this.root.style.setProperty('--fs', '11.5px');
-        this.reveal.hidden = !hidden;
-        Object.assign(this.reveal.style, { left: '8px', top: '8px', maxWidth: '' });
-        if (this.compactOpen === undefined && this.view) {
-            const c = this.view.settings.compact || {};
-            this.compactOpen = c.open === true;
-            this.compactPos = { x: Number(c.x) || 16, y: Number(c.y) || 16 };
-        }
-        this.compactPos = this.compactPos || { x: 16, y: 16 };
-        const open = this.compactOpen === true;
-        this.fight.hidden = hidden || !open;
-        this.spellPanel.hidden = hidden || !open;
-        this.rotPanel.hidden = hidden || !open;
-        this.spellPanel.classList.remove('narrow');
-        this.el.pill.hidden = hidden || open;
-        this.placeCompact();
+        const width = side ? Math.min(SIDE_MAX, Math.floor(gutter - 16)) : FLOAT_W;
+        return { W, H, boxH, gutter, top, side, width };
     }
 
-    placeCompact() {
-        if (this.mode !== 'compact') return;
-        const p = this.compactPos;
-        const width = 230;
-        const fightH = this.fight.hidden ? 0 : this.fight.offsetHeight;
-        Object.assign(this.fight.style, { left: p.x + 'px', top: p.y + 'px', width: width + 'px', maxHeight: '', height: '' });
-        Object.assign(this.spellPanel.style, {
-            left: p.x + 'px',
-            top: p.y + fightH + 6 + 'px',
-            width: width + 'px',
-            height: '',
-            maxHeight: Math.max(120, window.innerHeight - (p.y + fightH + 14)) + 'px'
+    place(panel, x, y, w, h, maxH) {
+        Object.assign(panel.style, {
+            left: Math.round(x) + 'px',
+            top: Math.round(y) + 'px',
+            width: Math.round(w) + 'px',
+            height: h ? Math.round(h) + 'px' : '',
+            maxHeight: h ? '' : Math.max(52, Math.round(maxH)) + 'px'
         });
-        Object.assign(this.rotPanel.style, {
-            left: p.x + width + ROT_GAP + 'px',
-            top: p.y + 'px',
-            width: ROT_W + 'px',
-            maxHeight: Math.max(120, window.innerHeight - p.y - 8) + 'px',
-            height: ''
+    }
+
+    /** Where a moved window goes: where it was left, kept on screen. */
+    placeSaved(panel, r, g) {
+        const w = Math.max(120, Math.min(r.w || g.width, g.W));
+        const x = Math.max(0, Math.min(r.x, g.W - 60));
+        const y = Math.max(0, Math.min(r.y, g.H - 30));
+        const h = r.h ? Math.max(52, Math.min(r.h, g.H - y)) : 0;
+        this.place(panel, x, y, w, h, g.H - y - 8);
+    }
+
+    /** The Rotation window's own place, unless it was moved: right under the Damage Meter. */
+    dockRotation() {
+        const g = this.geo || this.geometry();
+        if (this.layoutState.rects.rotation) return;
+        const f = this.panels.fight;
+        const p = this.panels.rotation;
+        const fr = f.hidden ? null : f.getBoundingClientRect();
+        const x = fr ? fr.left : g.side ? g.gutter - 8 - g.width : 16;
+        const w = fr ? fr.width : g.width;
+        const y = fr ? fr.bottom + GAP : g.top + 8;
+        const bottom = g.side ? g.top + g.boxH - 8 : g.H - 8;
+        this.place(p, x, y, w, 0, bottom - y);
+    }
+
+    layout() {
+        if (!this.root) return;
+        const g = this.geometry();
+        this.geo = g;
+        const hidden = Boolean(this.view && this.view.settings.hidden);
+        const fs = g.side ? Math.max(11, Math.min(14, g.width / 14)) : 11.5;
+        this.root.style.setProperty('--fs', fs.toFixed(1) + 'px');
+        this.reveal.hidden = !hidden;
+        const fr = this.layoutState.rects.fight;
+        Object.assign(this.reveal.style, {
+            left: Math.round(fr ? Math.max(4, Math.min(fr.x, g.W - 120)) : g.side ? Math.max(4, g.gutter - 8 - g.width) : 8) + 'px',
+            top: Math.round(fr ? Math.max(4, Math.min(fr.y, g.H - 30)) : g.side ? g.top + 8 : 8) + 'px',
+            maxWidth: g.width + 'px'
         });
-        Object.assign(this.el.pill.style, { left: p.x + 'px', top: p.y + 'px' });
+        for (const id of PANELS) this.panels[id].hidden = hidden;
+        if (hidden) return;
+
+        const rects = this.layoutState.rects;
+        // Damage Meter: top of the left gutter.
+        if (rects.fight) this.placeSaved(this.panels.fight, rects.fight, g);
+        else if (g.side) this.place(this.panels.fight, g.gutter - 8 - g.width, g.top + 8, g.width, 0, g.boxH - 16);
+        else this.place(this.panels.fight, 16, 16, g.width, 0, g.H - 32);
+        // Spells: top of the right gutter, as wide as the Damage Meter.
+        if (rects.spells) this.placeSaved(this.panels.spells, rects.spells, g);
+        else if (g.side) this.place(this.panels.spells, g.W - g.gutter + 8, g.top + 8, g.width, 0, g.boxH - 16);
+        else this.place(this.panels.spells, g.W - 16 - g.width, 16, g.width, 0, g.H - 32);
+        this.panels.spells.classList.toggle('narrow', this.panels.spells.offsetWidth < SPELLS_NARROW);
+        // Rotation: under the Damage Meter.
+        if (rects.rotation) this.placeSaved(this.panels.rotation, rects.rotation, g);
+        else this.dockRotation();
     }
 
     /* ---------- rendering ---------- */
@@ -512,6 +542,17 @@ class Overlay {
         const m = view.meter;
         const t = m.totals;
         const el = this.el;
+
+        const lay = (view.settings && view.settings.layout) || {};
+        const layoutKey = JSON.stringify(lay);
+        if (firstView || this.lastLayoutKey !== layoutKey) {
+            // The main process holds the saved layout; it wins unless a drag is under way.
+            this.lastLayoutKey = layoutKey;
+            if (!this.drag && !this.resizing) {
+                this.layoutState = { rects: Object.assign({}, lay.rects || {}) };
+                this.layout();
+            }
+        }
 
         el.dot.className = 'dot ' + m.state;
         el.clock.innerHTML = cells(clock(m.elapsedMs));
@@ -524,7 +565,6 @@ class Overlay {
         el.hits.textContent = int(t.hits);
         el.crit.textContent = Math.round(m.critRate * 100) + '%';
         el.auto.setAttribute('aria-pressed', String(Boolean(view.settings.autoStart)));
-        el.pill.innerHTML = '<span class="num">' + cells(short(m.dps)) + '</span><span>' + esc(clock(m.elapsedMs)) + '</span>';
 
         // Scaling: damage split by the stat each hit scales with.
         const s = m.byStat;
@@ -542,35 +582,48 @@ class Overlay {
         el.ignored.hidden = !(ig.hits && m.state !== 'running');
         el.ignored.textContent = ig.hits ? int(ig.hits) + ' hit' + (ig.hits === 1 ? '' : 's') + ' (' + short(ig.damage) + ' damage) landed while the timer was stopped and weren’t counted.' : '';
 
-        this.renderSpark(m);
+        this.renderGraph(m);
         this.renderStatus(view);
         this.renderSpells(view);
         this.renderRotation(m);
-        if (firstView || this.lastHidden !== view.settings.hidden) {
+        if (this.lastHidden !== view.settings.hidden) {
             this.lastHidden = view.settings.hidden;
             this.layout();
-        } else if (this.mode === 'compact') {
-            this.placeCompact();
+        } else if (!this.drag) {
+            // The Damage Meter's height moves with its content; the Rotation window follows it.
+            this.dockRotation();
         }
     }
 
-    renderSpark(m) {
+    /**
+     * DPS over the whole fight: the shaded area is the damage per second in each moment, the
+     * line the running average (the big DPS number) as it built up.
+     */
+    renderGraph(m) {
         const svg = this.el.spark;
-        const data = m.timeline || [];
-        if (data.length < 2) {
-            svg.innerHTML = '';
-            svg.style.display = 'none';
+        const series = m.dpsSeries || { perSecond: [], running: [], seconds: 0 };
+        const per = series.perSecond || [];
+        const run = series.running || [];
+        if (per.length < 2) {
+            svg.innerHTML = '<text x="60" y="21" text-anchor="middle" font-size="7" fill="#b5a983">Starts after 2 s of fighting</text>';
+            this.el.gpeak.textContent = '';
+            this.el.gend.textContent = '';
             return;
         }
-        svg.style.display = '';
-        // Rolling 3-second damage, so single big hits don't spike the line to nothing in between.
-        const smooth = data.map((_, i) => (data[i] + (data[i - 1] || 0) + (data[i - 2] || 0)) / Math.min(3, i + 1));
-        const max = Math.max.apply(null, smooth) || 1;
-        const n = smooth.length;
-        const pts = smooth.map((v, i) => ((i / (n - 1)) * 120).toFixed(1) + ',' + (23 - (v / max) * 21).toFixed(1));
+        const smooth = per;
+        const peak = series.peak || Math.max.apply(null, per);
+        const top = Math.max(Math.max.apply(null, per), Math.max.apply(null, run), 1) * 1.08;
+        const n = per.length;
+        const xy = (v, i) => ((i / (n - 1)) * 120).toFixed(1) + ',' + (35 - (v / top) * 33).toFixed(1);
+        const area = smooth.map(xy).join(' ');
+        const line = run.map(xy).join(' ');
+        const mid = (35 - ((top / 1.08 / 2) / top) * 33).toFixed(1);
         svg.innerHTML =
-            '<polygon points="0,24 ' + pts.join(' ') + ' 120,24" fill="rgba(0,204,255,0.14)"/>' +
-            '<polyline points="' + pts.join(' ') + '" fill="none" stroke="#00ccff" stroke-width="1.2" vector-effect="non-scaling-stroke"/>';
+            '<line x1="0" x2="120" y1="' + mid + '" y2="' + mid + '" stroke="rgba(184,151,63,0.25)" stroke-width="0.6" vector-effect="non-scaling-stroke" stroke-dasharray="2 2"/>' +
+            '<polygon points="0,36 ' + area + ' 120,36" fill="rgba(0,204,255,0.24)"/>' +
+            '<polyline points="' + line + '" fill="none" stroke="#00ccff" stroke-width="1.6" vector-effect="non-scaling-stroke"/>';
+        this.el.gpeak.innerHTML = 'best 5 s <b>' + esc(compact(peak)) + '</b>';
+        this.el.gend.textContent = mmss(series.seconds);
     }
 
     renderStatus(view) {
@@ -579,16 +632,50 @@ class Overlay {
         let html = '<span class="link ' + esc(link.state || '') + '">' + esc(link.text || '') + '</span>';
         if (scan) {
             html += '<span>Spells from your scan of ' + esc(when(scan.scannedAt)) + ' (<a data-act="rescan">check again</a>)</span>';
-        } else {
-            html += '<span>No spell scan yet. Run “Scan spells” in DB Inventory Scanner to list your equipped spells (<a data-act="scanFolder">scan folder</a>).</span>';
         }
         if (view.lastExport) {
             html += '<span>Saved ' + esc(view.lastExport.split(/[\\/]/).pop()) + ' (<a data-act="reveal">show</a>)</span>';
         }
-        html += '<span>F6 start or stop, F7 reset, F8 hide</span>';
+        html += '<span>F6 start or stop, F7 reset, F8 hide. Drag a window by its title, resize it from its corner (<a data-act="resetLayout">reset layout</a>).</span>';
         if (this.lastStatus !== html) {
             this.el.status.innerHTML = html;
             this.lastStatus = html;
+        }
+    }
+
+    /**
+     * The Rotation window: the casts in order as one line of text that wraps, "MA2 s2 s3 RA1 s4":
+     * s and the hotbar slot for a spell (s1-s6 = keys 1, 2, 3, 4, E, Q), MA or RA and the hits
+     * landed for basic attacks in a row. Hover a part for its spell, time and damage.
+     */
+    renderRotation(m) {
+        const rot = m.rotation || { count: 0, casts: 0, entries: [] };
+        const list = this.el.rot;
+        this.el.rotationSub.textContent = rot.casts ? int(rot.casts) + ' cast' + (rot.casts === 1 ? '' : 's') : '';
+        const entries = (rot.entries || []).filter((e) => e.kind !== 'other');
+        if (!entries.length) {
+            if (!list.querySelector('.empty')) list.innerHTML = '<p class="empty">Your casts show here in order, like MA2 s2 s3 RA1 s4.</p>';
+            this.rotKey = '';
+            return;
+        }
+        const stick = this.rotStick;
+        const earlier = rot.count > (rot.entries || []).length;
+        const parts = entries.map((e, i) => {
+            const basic = e.kind === 'melee' || e.kind === 'ranged';
+            const name = basic
+                ? (e.kind === 'melee' ? 'Melee' : 'Ranged') + ' attacks (' + e.label + '), ' + e.casts + ' in a row'
+                : e.label + (e.rank ? ' rank ' + e.rank : '') + (e.slotKey ? ', key ' + e.slotKey : '');
+            const tip =
+                name + '\n' + clock(e.t) + (basic && e.endT > e.t ? ' to ' + clock(e.endT) : '') + '\n' +
+                (e.damage ? int(e.damage) + ' damage, ' + e.hits + ' hit' + (e.hits === 1 ? '' : 's') + (e.crits ? ' (' + e.crits + ' crit)' : '') + (e.dotDamage ? ', ' + int(e.dotDamage) + ' over time' : '') : 'no damage');
+            const cls = 't' + (basic ? ' basic' : '') + (!basic && e.crits ? ' crit' : '') + (i === entries.length - 1 ? ' last' : '');
+            return '<span class="' + cls + '" title="' + esc(tip) + '">' + esc(e.badge) + '</span>';
+        });
+        const html = (earlier ? '<span class="t basic" title="Earlier casts are in the export">… </span>' : '') + parts.join(' ');
+        if (this.rotKey !== html) {
+            list.innerHTML = html;
+            this.rotKey = html;
+            if (stick) list.scrollTop = list.scrollHeight;
         }
     }
 
@@ -609,9 +696,7 @@ class Overlay {
         for (const r of others) wanted.push(r);
 
         if (!wanted.length) {
-            const msg = scan
-                ? 'Press Start (F6), then fight. Every spell that lands a hit is listed here.'
-                : 'Press Start (F6), then fight. Every spell that lands a hit is listed here, with its casts and share of your damage.';
+            const msg = 'Press Start (F6), then fight. Every spell that lands a hit is listed here, numbered by its hotbar slot (1 to 6), with its casts and share of your damage.';
             if (!list.querySelector('.empty')) {
                 list.innerHTML = '<p class="empty"></p>';
                 this.rowEls.clear();
@@ -629,7 +714,7 @@ class Overlay {
             seen.add(id);
             let node = this.rowEls.get(id);
             if (!node) {
-                node = document.createElement(item.group ? 'div' : 'div');
+                node = document.createElement('div');
                 node.className = item.group ? 'group' : 'spell';
                 this.rowEls.set(id, node);
             }
@@ -648,84 +733,6 @@ class Overlay {
                 this.rowEls.delete(id);
             }
         }
-    }
-
-    /**
-     * The Rotation strip: every cast in the order it went out, newest at the bottom. Each line
-     * is the hotbar key (M or R for a basic attack) and the damage that cast has done so far,
-     * DoT ticks included; a pause of 1.5 s or more shows as a gap.
-     */
-    renderRotation(m) {
-        const rot = m.rotation || { count: 0, casts: 0, entries: [] };
-        const list = this.el.rot;
-        this.el.rotcount.textContent = rot.casts ? int(rot.casts) + ' cast' + (rot.casts === 1 ? '' : 's') : '';
-        if (!rot.entries.length) {
-            if (!list.querySelector('.empty')) {
-                list.innerHTML = '<p class="empty">Casts show here in order.</p>';
-                this.castEls.clear();
-            }
-            return;
-        }
-        const empty = list.querySelector('.empty');
-        if (empty) empty.remove();
-        const stick = this.rotStick;
-        const seen = new Set();
-        let prev = null;
-        let prevT = null;
-        for (const e of rot.entries) {
-            if (prevT !== null && e.t - prevT >= 1500) {
-                const gid = 'g' + e.id;
-                seen.add(gid);
-                let g = this.castEls.get(gid);
-                if (!g) {
-                    g = document.createElement('div');
-                    g.className = 'gap';
-                    g.textContent = ((e.t - prevT) / 1000).toFixed(1) + 's';
-                    this.castEls.set(gid, g);
-                }
-                const next = prev ? prev.nextSibling : list.firstChild;
-                if (next !== g) list.insertBefore(g, next);
-                prev = g;
-            }
-            prevT = e.endT === undefined ? e.t : e.endT;
-            const id = 'c' + e.id;
-            seen.add(id);
-            let node = this.castEls.get(id);
-            if (!node) {
-                node = document.createElement('div');
-                node.className = 'cast k-' + e.kind + (this.rotPainted ? ' new' : '');
-                this.castEls.set(id, node);
-                if (this.rotPainted) setTimeout(() => node.classList.remove('new'), 60);
-            }
-            const amt = e.damage
-                ? '<span class="amt' + (e.crits ? ' crit' : '') + '">' + esc(compact(e.damage)) + '</span>'
-                : '<span class="amt none">&#8211;</span>';
-            const html = '<kbd>' + esc(e.badge) + '</kbd>' + amt;
-            if (node._html !== html) {
-                node.innerHTML = html;
-                node._html = html;
-                const basic = e.kind === 'melee' || e.kind === 'ranged';
-                const name = basic
-                    ? (e.kind === 'melee' ? 'Melee' : 'Ranged') + ' basic attacks (' + e.label + '): ' + e.casts + ' in a row'
-                    : e.label + (e.rank ? ', rank ' + e.rank : '') + (e.slotKey ? ', hotbar ' + e.slotKey : '');
-                node.title =
-                    name + '\nat ' + clock(e.t) + (basic && e.endT > e.t ? ' to ' + clock(e.endT) : '') + '\n' +
-                    (e.damage
-                        ? int(e.damage) + ' damage' + (e.hits ? ', ' + e.hits + ' hit' + (e.hits === 1 ? '' : 's') + (e.crits ? ' (' + e.crits + ' crit)' : '') : '') + (e.dotDamage ? '\nover time ' + int(e.dotDamage) + ' (' + e.dotTicks + ' ticks)' : '')
-                        : 'no damage');
-            }
-            const next = prev ? prev.nextSibling : list.firstChild;
-            if (next !== node) list.insertBefore(node, next);
-            prev = node;
-        }
-        for (const [id, node] of this.castEls) {
-            if (!seen.has(id)) {
-                node.remove();
-                this.castEls.delete(id);
-            }
-        }
-        this.rotPainted = true;
-        if (stick) list.scrollTop = list.scrollHeight;
     }
 
     fillSpell(node, r, maxDamage, total) {

@@ -14,7 +14,7 @@ const { PowerTable, dataFromSwz } = require('./powers');
 const { SpellScanStore } = require('./spellScans');
 const exporter = require('./exporter');
 
-const VERSION = '1.4.1';
+const VERSION = '1.5.0';
 const SOURCE = 'DB DPS Overlay ' + VERSION;
 const PORT_BASE = 47690;
 const PORT_LAST = 47890;
@@ -153,7 +153,7 @@ class DpsOverlay {
         this.dirty = true;
         this.lastSent = 0;
         this.lastExport = '';
-        this.settings = { autoStart: false, hidden: false, compact: { x: 16, y: 16, open: false } };
+        this.settings = { autoStart: false, hidden: false, layout: { rects: {} } };
         this.meter.on('change', () => {
             this.dirty = true;
         });
@@ -520,15 +520,28 @@ class DpsOverlay {
                 m.autoStart = this.settings.autoStart;
                 this.saveSettings();
                 break;
-            case 'compact':
-                if (arg && typeof arg === 'object') {
-                    this.settings.compact = {
-                        x: Math.round(Number(arg.x) || 0),
-                        y: Math.round(Number(arg.y) || 0),
-                        open: arg.open !== false
-                    };
+            case 'layout':
+                // A window the player moved or resized: { id, rect: { x, y, w, h } }, in CSS px.
+                if (arg && typeof arg === 'object' && ['fight', 'rotation', 'spells'].includes(arg.id)) {
+                    const lay = (this.settings.layout = this.settings.layout || { rects: {} });
+                    lay.rects = lay.rects || {};
+                    const r = arg.rect;
+                    if (r && typeof r === 'object') {
+                        lay.rects[arg.id] = {
+                            x: Math.round(Number(r.x) || 0),
+                            y: Math.round(Number(r.y) || 0),
+                            w: Math.round(Number(r.w) || 0),
+                            h: Math.round(Number(r.h) || 0)
+                        };
+                    } else {
+                        delete lay.rects[arg.id];
+                    }
                     this.saveSettings();
                 }
+                break;
+            case 'resetLayout':
+                this.settings.layout = { rects: {} };
+                this.saveSettings();
                 break;
             case 'export':
                 return this.exportResults(event);
@@ -605,6 +618,7 @@ class DpsOverlay {
             const s = JSON.parse(fs.readFileSync(this.settingsPath(), 'utf8'));
             if (s && typeof s === 'object') {
                 this.settings = Object.assign(this.settings, s);
+                delete this.settings.compact; // the old single movable card
             }
         } catch (_e) {
             // first run

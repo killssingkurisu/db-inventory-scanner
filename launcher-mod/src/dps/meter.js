@@ -13,7 +13,7 @@ const { EventEmitter } = require('events');
 
 const MAX_HITS_LOGGED = 50000;
 const MAX_ROTATION = 20000;
-const ROTATION_SHOWN = 160;
+const ROTATION_SHOWN = 300;
 /** How long after a cast its power's hits and DoT ticks still count toward that cast. */
 const CAST_WINDOW_MS = 60000;
 const STATS = ['attack', 'expertise', 'unknown'];
@@ -339,13 +339,14 @@ class DpsMeter extends EventEmitter {
     }
 
     /**
-     * What a rotation entry shows: a spell's hotbar slot from the game's data (1-6: 1, 2, 3, 4,
-     * E, Q), MA or RA plus the hits so far for a run of basic attacks, initials for anything else.
+     * What a rotation entry shows: s and a spell's hotbar slot from the game's data (s1-s6 for
+     * keys 1, 2, 3, 4, E, Q), MA or RA plus the hits so far for a run of basic attacks, initials
+     * for anything else.
      */
     badge(entry) {
         if (entry.kind === 'melee') return 'MA' + entry.hits;
         if (entry.kind === 'ranged') return 'RA' + entry.hits;
-        if (entry.slot > 0) return String(entry.slot);
+        if (entry.slot > 0) return 's' + entry.slot;
         return initials(entry.label);
     }
 
@@ -363,6 +364,7 @@ class DpsMeter extends EventEmitter {
         return {
             count: list.length,
             casts: list.reduce((n, e) => n + e.casts, 0),
+            text: list.filter((e) => e.kind !== 'other').map((e) => this.badge(e)).join(' '),
             entries: shown.map((e) => ({
                 id: e.id,
                 t: e.t,
@@ -488,8 +490,46 @@ class DpsMeter extends EventEmitter {
             timeline: this.timeline.slice(Math.max(0, last - 60)),
             timelineStart: Math.max(0, last - 60),
             levels: this.levels.slice(),
-            rotation: this.rotationView(ROTATION_SHOWN)
+            rotation: this.rotationView(ROTATION_SHOWN),
+            dpsSeries: this.dpsSeries()
         };
+    }
+
+    /**
+     * DPS over the whole fight for the graph, in at most `points` buckets: the DPS over the last
+     * 5 seconds at each moment (single big hits would otherwise flatten everything else), and the
+     * running average (total so far / time so far) at the end of each bucket. `peak` is the best
+     * 5 seconds. The second still in progress is left out while the clock runs.
+     */
+    dpsSeries(points) {
+        const max = points || 90;
+        let n = this.timeline.length;
+        if (this._state === 'running' && n > 1) n -= 1;
+        if (n < 2) return { bucketSec: 1, seconds: n, perSecond: [], running: [], peak: 0 };
+        const rolling = [];
+        let win = 0;
+        for (let i = 0; i < n; i++) {
+            win += this.timeline[i];
+            if (i >= 5) win -= this.timeline[i - 5];
+            rolling.push(win / Math.min(5, i + 1));
+        }
+        const size = Math.ceil(n / max);
+        const perSecond = [];
+        const running = [];
+        let total = 0;
+        for (let start = 0; start < n; start += size) {
+            const end = Math.min(n, start + size);
+            let sum = 0;
+            let roll = 0;
+            for (let i = start; i < end; i++) {
+                sum += this.timeline[i];
+                roll += rolling[i];
+            }
+            total += sum;
+            perSecond.push(Math.round(roll / (end - start)));
+            running.push(Math.round(total / end));
+        }
+        return { bucketSec: size, seconds: n, perSecond, running, peak: Math.round(Math.max.apply(null, rolling)) };
     }
 
     /** Everything, for the export file. */
