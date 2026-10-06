@@ -24,6 +24,11 @@ jobs:
         run: sh tools/check-build.sh
       - name: Run the checks on real screenshots
         run: sh tests/run.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: DPS overlay checks (packets, relay, meter, export)
+        run: node launcher-mod/test/run.js
 
   windows:
     name: Windows build and installer
@@ -64,6 +69,16 @@ jobs:
           Compress-Archive -Path $files.FullName -DestinationPath "out/DbScanner-${{ steps.version.outputs.value }}-portable.zip"
           Get-ChildItem out | Format-Table Name, Length
 
+      - name: DPS overlay zip
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path launcher-mod/src/dps/index.js -Pattern "const VERSION = '([^']+)'").Matches[0].Groups[1].Value
+          $stage = "out/overlay/DB DPS Overlay"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item "launcher-mod/Install DPS overlay.cmd", "launcher-mod/Uninstall DPS overlay.cmd", "launcher-mod/README.md" $stage
+          Copy-Item -Recurse launcher-mod/install, launcher-mod/src $stage
+          Compress-Archive -Path $stage -DestinationPath "out/DB-DPS-Overlay-$v.zip"
+
       # The same checks as the Linux job, read with the text recognition built into Windows.
       # Informational: the runner may not have an OCR language installed.
       - name: Windows text recognition check
@@ -92,6 +107,7 @@ jobs:
           path: |
             out/DbScanner-Setup-*.exe
             out/DbScanner-*-portable.zip
+            out/DB-DPS-Overlay-*.zip
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -101,8 +117,10 @@ jobs:
           body: |
             **DbScanner-Setup-${{ steps.version.outputs.value }}.exe** installs the scanner for your Windows user (no administrator rights needed) and adds it to the Start menu.
             **DbScanner-${{ steps.version.outputs.value }}-portable.zip** is the same program without an installer: unzip it anywhere and run DbScanner.exe.
+            **DB-DPS-Overlay-x.y.z.zip** adds a damage meter beside the game in the Dungeon Blitz: R launcher: unzip it and run *Install DPS overlay.cmd* with the game closed.
 
             Needs Windows 10 or 11. See the [README](https://github.com/${{ github.repository }}#readme) for how to scan and import into the [DPS Calculator](https://killssingkurisu.github.io/db-dps-calculator/).
           files: |
             out/DbScanner-Setup-*.exe
             out/DbScanner-*-portable.zip
+            out/DB-DPS-Overlay-*.zip

@@ -35,6 +35,7 @@ namespace DbScanner.UI
         readonly ComboBox speedBox = new ComboBox();
         readonly CheckBox debugBox = new CheckBox();
         readonly TextBox folderBox = new TextBox();
+        readonly TextBox characterBox = new TextBox();
         readonly Label stageLabel = new Label();
         readonly TextBox logBox = new TextBox();
         readonly Label summaryLabel = new Label();
@@ -43,6 +44,7 @@ namespace DbScanner.UI
         ScanResult lastResult;
         string lastJson;
         string lastFile;
+        bool lastWasSpells;
 
         public static string Version
         {
@@ -58,8 +60,8 @@ namespace DbScanner.UI
             BackColor = Bg;
             ForeColor = Ink;
             Font = new Font("Segoe UI", 10f);
-            ClientSize = new Size(620, 640);
-            MinimumSize = new Size(560, 600);
+            ClientSize = new Size(640, 720);
+            MinimumSize = new Size(580, 640);
             StartPosition = FormStartPosition.CenterScreen;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch (ArgumentException) { }
             BuildUi();
@@ -93,10 +95,11 @@ namespace DbScanner.UI
 
             root.Controls.Add(Lbl("Dungeon Blitz Inventory Scanner", Ink, 15f, true));
             root.Controls.Add(Lbl(
-                "Reads every gear piece and charm from your inventory and saves them for the DPS Calculator.\n" +
-                "1. In the game, open your inventory on the Gear tab.\n" +
-                "2. Pick the game window below and press Start scan.\n" +
-                "3. Hands off the mouse until it's done. Moving the mouse or pressing Esc stops it.", Dim));
+                "Reads your gear, charms and spells from the game and saves them for the DPS Calculator and the DPS overlay.\n" +
+                "Inventory: open your inventory on the Gear tab, then press Scan inventory.\n" +
+                "Spells: open the Tome of Power, then press Scan spells. It reads every spell and rank,\n" +
+                "closes the Tome and reads your hotbar. With the Tome closed it reads just the hotbar.\n" +
+                "Hands off the mouse until it's done. Moving the mouse or pressing Esc stops it.", Dim));
 
             var winRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 10, 0, 0) };
             windowBox.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -145,10 +148,25 @@ namespace DbScanner.UI
             root.Controls.Add(Lbl("Save scans in", Dim));
             root.Controls.Add(folderRow);
 
-            var start = MakeButton("Start scan", (s, e) => StartScan(), true);
-            start.Margin = new Padding(0, 14, 0, 6);
-            root.Controls.Add(start);
+            var charRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
+            characterBox.Width = 220;
+            characterBox.Text = settings.LastCharacter;
+            characterBox.BackColor = Panel;
+            characterBox.ForeColor = Ink;
+            characterBox.BorderStyle = BorderStyle.FixedSingle;
+            charRow.Controls.Add(characterBox);
+            charRow.Controls.Add(Lbl("spell scans are saved under this name", Dim, 9f));
+            root.Controls.Add(Lbl("Character", Dim));
+            root.Controls.Add(charRow);
+
+            var startRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 14, 0, 6) };
+            var start = MakeButton("Scan inventory", (s, e) => StartScan(false), true);
+            var startSpells = MakeButton("Scan spells", (s, e) => StartScan(true), true);
+            startRow.Controls.Add(start);
+            startRow.Controls.Add(startSpells);
+            root.Controls.Add(startRow);
             startButtonRef = start;
+            startSpellsRef = startSpells;
 
             stageLabel.AutoSize = true;
             stageLabel.ForeColor = Accent;
@@ -189,12 +207,18 @@ namespace DbScanner.UI
             root.Controls.Add(link);
         }
 
-        Button startButtonRef, openCalcRef, copyRef;
+        Button startButtonRef, startSpellsRef, openCalcRef, copyRef;
 
         void SetResultButtons(bool on)
         {
-            openCalcRef.Enabled = on;
+            openCalcRef.Enabled = on && !lastWasSpells;
             copyRef.Enabled = on;
+        }
+
+        void SetStartButtons(bool on)
+        {
+            startButtonRef.Enabled = on;
+            startSpellsRef.Enabled = on;
         }
 
         void RefreshWindows()
@@ -220,7 +244,7 @@ namespace DbScanner.UI
 
         /* ---------- scanning ---------- */
 
-        void StartScan()
+        void StartScan(bool spells)
         {
             var w = windowBox.SelectedItem as GameWindow;
             if (w == null || !w.Exists) { MessageBox.Show(this, "Pick the game window first (press Refresh if it isn't listed).", Text); return; }
@@ -233,6 +257,7 @@ namespace DbScanner.UI
             settings.Speed = speedBox.SelectedIndex;
             settings.Debug = debugBox.Checked;
             settings.Folder = folderBox.Text.Trim();
+            settings.LastCharacter = characterBox.Text.Trim();
             settings.Save();
 
             var opt = new ScanOptions { Bag = settings.Bag, Charms = settings.Charms, Debug = settings.Debug };
@@ -252,10 +277,11 @@ namespace DbScanner.UI
 
             logBox.Clear();
             summaryLabel.Text = "";
+            lastWasSpells = spells;
             SetResultButtons(false);
-            startButtonRef.Enabled = false;
+            SetStartButtons(false);
             Log("Text recognition: Windows (" + ocr.LanguageName + ").");
-            Log("Scanning " + w + " …");
+            Log((spells ? "Scanning spells in " : "Scanning ") + w + " …");
 
             cancel = new CancellationTokenSource();
             var token = cancel.Token;
@@ -289,11 +315,11 @@ namespace DbScanner.UI
                             catch (IOException) { }
                         };
                     w.Activate();
-                    result = scanner.Run();
+                    result = spells ? scanner.RunSpells() : scanner.Run();
                 }
                 catch (Exception ex) { error = ex; }
                 finally { if (debugLog != null) lock (debugLog) debugLog.Dispose(); }
-                BeginInvoke(new Action(() => Finish(result, error, debugDir)));
+                BeginInvoke(new Action(() => { if (spells) FinishSpells(result, error, debugDir); else Finish(result, error, debugDir); }));
             }) { IsBackground = true, Name = "scan" };
             thread.Start();
         }
@@ -309,7 +335,7 @@ namespace DbScanner.UI
             Native.UnregisterHotKey(Handle, HotkeyId);
             WindowState = FormWindowState.Normal;
             Activate();
-            startButtonRef.Enabled = true;
+            SetStartButtons(true);
             if (error != null)
             {
                 stageLabel.Text = "The scan failed.";
@@ -326,6 +352,12 @@ namespace DbScanner.UI
                 summaryLabel.Text = result.Problems.LastOrDefault() ?? "Open your inventory in the game and try again.";
                 return;
             }
+            if (!string.IsNullOrEmpty(result.CharacterName))
+            {
+                characterBox.Text = result.CharacterName;
+                settings.LastCharacter = result.CharacterName;
+                settings.Save();
+            }
             lastJson = Json.Write(result.ToJson("DB Inventory Scanner " + Version), true);
             string name = string.IsNullOrEmpty(result.CharacterName) ? "character" : string.Concat(result.CharacterName.Split(Path.GetInvalidFileNameChars()));
             lastFile = Path.Combine(settings.Folder, "DB inventory " + name + " " + DateTime.Now.ToString("yyyy-MM-dd HHmm", CultureInfo.InvariantCulture) + ".json");
@@ -338,6 +370,49 @@ namespace DbScanner.UI
                 string.IsNullOrEmpty(result.CharacterName) ? "Your character" : result.CharacterName,
                 string.IsNullOrEmpty(result.Class) ? "" : " (" + result.Class + ")",
                 gear, result.Gear.Count(g => g.Equipped && g.Def != null), charms, result.Charms.Count,
+                result.Problems.Count > 0 ? " " + result.Problems.Count + " notes in the log above." : "",
+                debugDir != null ? " Troubleshooting pictures: " + debugDir : "");
+            SetResultButtons(true);
+        }
+
+        void FinishSpells(ScanResult result, Exception error, string debugDir)
+        {
+            Native.UnregisterHotKey(Handle, HotkeyId);
+            WindowState = FormWindowState.Normal;
+            Activate();
+            SetStartButtons(true);
+            if (error != null)
+            {
+                stageLabel.Text = "The scan failed.";
+                Log("Error: " + error.Message);
+                MessageBox.Show(this, "The scan failed: " + error.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            lastResult = result;
+            foreach (var p in result.Problems) Log("Note: " + p);
+            var read = result.Spells.Where(s => s.Def != null).ToList();
+            if (read.Count == 0)
+            {
+                stageLabel.Text = result.Cancelled ? "Stopped." : "No spells were read.";
+                summaryLabel.Text = result.Problems.LastOrDefault() ?? "Open the Tome of Power in the game and try again.";
+                return;
+            }
+            result.CharacterName = characterBox.Text.Trim();
+            lastJson = Json.Write(result.ToSpellsJson("DB Inventory Scanner " + Version), true);
+            string name = string.IsNullOrEmpty(result.CharacterName) ? "character" : string.Concat(result.CharacterName.Split(Path.GetInvalidFileNameChars()));
+            lastFile = Path.Combine(settings.Folder, "DB spells " + name + " " + DateTime.Now.ToString("yyyy-MM-dd HHmm", CultureInfo.InvariantCulture) + ".json");
+            try { File.WriteAllText(lastFile, lastJson, new UTF8Encoding(false)); Log("Saved " + lastFile); }
+            catch (IOException ex) { Log("Couldn't save the file: " + ex.Message); lastFile = null; }
+
+            stageLabel.Text = result.Cancelled ? "Stopped early; kept what was read." : "Done.";
+            string hotbar = result.Hotbar.Count == 0 ? "nothing on the hotbar" :
+                "hotbar " + string.Join(", ", result.Hotbar.Select(s => s.HotbarKey + " " + s.Def.Name + (s.Rank > 0 ? " " + s.Rank : "")));
+            summaryLabel.Text = string.Format(CultureInfo.InvariantCulture,
+                "{0}: {1} spells ({2} trained){3}; {4}.{5} The DPS overlay in the launcher picks this file up by itself.{6}",
+                string.IsNullOrEmpty(result.CharacterName) ? "Your character" : result.CharacterName,
+                read.Count, read.Count(s => s.Bought),
+                result.TomeRead ? " from the Tome of Power" : " from the hotbar",
+                hotbar,
                 result.Problems.Count > 0 ? " " + result.Problems.Count + " notes in the log above." : "",
                 debugDir != null ? " Troubleshooting pictures: " + debugDir : "");
             SetResultButtons(true);
@@ -419,6 +494,7 @@ namespace DbScanner.UI
     {
         public bool Bag = true, Charms = true, Debug;
         public int Speed = 1;
+        public string LastCharacter = "";
         public string Folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "DB Inventory Scanner");
 
         static string FilePath
@@ -440,6 +516,7 @@ namespace DbScanner.UI
                 if (o.TryGetValue("debug", out v) && v is bool) s.Debug = (bool)v;
                 if (o.TryGetValue("speed", out v) && v is double) s.Speed = (int)(double)v;
                 if (o.TryGetValue("folder", out v) && v is string && ((string)v).Length > 0) s.Folder = (string)v;
+                if (o.TryGetValue("character", out v) && v is string) s.LastCharacter = (string)v;
             }
             catch (Exception) { /* fall back to defaults */ }
             return s;
@@ -450,7 +527,7 @@ namespace DbScanner.UI
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
-                File.WriteAllText(FilePath, Json.Write(new JObject().Add("bag", Bag).Add("charms", Charms).Add("debug", Debug).Add("speed", Speed).Add("folder", Folder), true));
+                File.WriteAllText(FilePath, Json.Write(new JObject().Add("bag", Bag).Add("charms", Charms).Add("debug", Debug).Add("speed", Speed).Add("folder", Folder).Add("character", LastCharacter), true));
             }
             catch (Exception) { /* not fatal */ }
         }

@@ -217,6 +217,27 @@ namespace DbScanner.Core
             return std < 11 && d < 12;
         }
 
+        /// <summary>An empty Tome of Power slot is plain parchment, about (215, 195, 155), with no icon on it.</summary>
+        public static bool TomeSlotEmpty(RgbImage icon)
+        {
+            if (icon.Pixels.Length == 0) return true;
+            double[] mean = new double[3], sq = new double[3];
+            foreach (int c in icon.Pixels)
+            {
+                int[] v = { RgbImage.R(c), RgbImage.G(c), RgbImage.B(c) };
+                for (int k = 0; k < 3; k++) { mean[k] += v[k]; sq[k] += v[k] * v[k]; }
+            }
+            double n = icon.Pixels.Length, std = 0;
+            for (int k = 0; k < 3; k++)
+            {
+                mean[k] /= n;
+                std += Math.Sqrt(Math.Max(0, sq[k] / n - mean[k] * mean[k]));
+            }
+            std /= 3;
+            double d = Math.Sqrt(Math.Pow(mean[0] - 215, 2) + Math.Pow(mean[1] - 195, 2) + Math.Pow(mean[2] - 155, 2));
+            return std < 14 && d < 40;
+        }
+
         /// <summary>Mean absolute difference per channel; 0 means identical.</summary>
         public static double Difference(RgbImage a, RgbImage b)
         {

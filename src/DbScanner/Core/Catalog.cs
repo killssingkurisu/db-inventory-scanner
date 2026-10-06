@@ -38,6 +38,45 @@ namespace DbScanner.Core
         internal string[] Norms;
     }
 
+    /// <summary>One rank of an ability: the player power the game uses for it (PoisonStrike10).</summary>
+    public sealed class AbilityRank
+    {
+        public int Rank;
+        public int PowerId;
+        public string PowerName;
+        public string ManaCost;
+        public int CooldownMs;
+        public string DamageType;
+        /// <summary>The tooltip text, "[Stats: 1.49x attack, 2x Expertise/s (5s), ...]" included.</summary>
+        public string Description;
+    }
+
+    /// <summary>
+    /// A class ability from the game's AbilityTypes, as the Tome of Power and the hotbar show it.
+    /// Key is the game's AbilityName (PoisonStrike); Name the display name (Poison Strike).
+    /// </summary>
+    public sealed class AbilityDef
+    {
+        public string Key;
+        public string Name;
+        /// <summary>Rogue, Executioner, ShadowWalker, ...: the class or discipline it belongs to.</summary>
+        public string Class;
+        /// <summary>Rogue, Mage or Paladin.</summary>
+        public string BaseClass;
+        public string Category;
+        /// <summary>The hotbar slot it goes in: 1-3 the tier abilities, 4-6 the discipline's master abilities, 0 a weapon passive.</summary>
+        public int Hotbar;
+        public int MaxRank;
+        public readonly List<AbilityRank> Ranks = new List<AbilityRank>();
+        internal string Norm;
+
+        public AbilityRank RankInfo(int rank)
+        {
+            foreach (var r in Ranks) if (r.Rank == rank) return r;
+            return null;
+        }
+    }
+
     public sealed class Match<T> where T : class
     {
         public T Item;
@@ -56,6 +95,8 @@ namespace DbScanner.Core
         public readonly List<CharmDef> Charms = new List<CharmDef>();
         /// <summary>Gem charms with a Magic Forge bonus ("Infinite Sapphire of Deflecting").</summary>
         public readonly List<CharmDef> ForgedCharms = new List<CharmDef>();
+        /// <summary>Class abilities with every rank (catalog "abilities"; empty in catalogs built before 1.1).</summary>
+        public readonly List<AbilityDef> Abilities = new List<AbilityDef>();
 
         // The game's charm types in item-id order, and the suffixes it names a forged charm with
         // (class_64 in the client): tier R adds half of the same-rank gem of the second type,
@@ -102,6 +143,34 @@ namespace DbScanner.Core
                 cat.Charms.Add(def);
             }
             cat.AddForgedCharms();
+            foreach (Dictionary<string, object> a in Json.List(root, "abilities"))
+            {
+                var def = new AbilityDef
+                {
+                    Key = Json.Str(a, "k"),
+                    Name = Json.Str(a, "n"),
+                    Class = Json.Str(a, "c"),
+                    BaseClass = Json.Str(a, "b"),
+                    Category = Json.Str(a, "cat"),
+                    Hotbar = Json.Int(a, "h"),
+                    MaxRank = Json.Int(a, "max")
+                };
+                foreach (List<object> r in Json.List(a, "r"))
+                {
+                    def.Ranks.Add(new AbilityRank
+                    {
+                        Rank = Convert.ToInt32(r[0], CultureInfo.InvariantCulture),
+                        PowerId = Convert.ToInt32(r[1], CultureInfo.InvariantCulture),
+                        PowerName = Convert.ToString(r[2], CultureInfo.InvariantCulture),
+                        ManaCost = Convert.ToString(r[3], CultureInfo.InvariantCulture),
+                        CooldownMs = Convert.ToInt32(r[4], CultureInfo.InvariantCulture),
+                        DamageType = Convert.ToString(r[5], CultureInfo.InvariantCulture),
+                        Description = Convert.ToString(r[6], CultureInfo.InvariantCulture)
+                    });
+                }
+                def.Norm = Normalize(def.Name);
+                cat.Abilities.Add(def);
+            }
             return cat;
         }
 
@@ -241,6 +310,28 @@ namespace DbScanner.Core
                 Consider(res, c, best, (a, b) => a.Key == b.Key);
             }
             return res;
+        }
+
+        /// <summary>
+        /// The ability a tooltip name belongs to. With a class ("Rogue"), abilities of the other
+        /// two classes are left out, since the Tome and the hotbar only show your own.
+        /// </summary>
+        public Match<AbilityDef> MatchAbility(string ocrText, string baseClass)
+        {
+            string t = Normalize(ocrText);
+            var res = new Match<AbilityDef> { Text = ocrText };
+            foreach (var a in Abilities)
+            {
+                if (!string.IsNullOrEmpty(baseClass) && a.BaseClass != baseClass) continue;
+                Consider(res, a, Similarity(t, a.Norm), (x, y) => x.Key == y.Key);
+            }
+            return res;
+        }
+
+        public AbilityDef AbilityByKey(string key)
+        {
+            foreach (var a in Abilities) if (a.Key == key) return a;
+            return null;
         }
 
         static void Consider<T>(Match<T> res, T item, double score, Func<T, T, bool> sameName) where T : class

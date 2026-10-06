@@ -66,6 +66,17 @@ namespace DbScanner.Win
             return new RectI(p.X, p.Y, r.Right - r.Left, r.Bottom - r.Top);
         }
 
+        /// <summary>The window's display scaling as a factor (1.5 at 150%); 1 when Windows can't say.</summary>
+        public double DpiScale()
+        {
+            try
+            {
+                uint dpi = Native.GetDpiForWindow(Handle);
+                return dpi >= 48 ? dpi / 96.0 : 1.0;
+            }
+            catch (EntryPointNotFoundException) { return 1.0; } // before Windows 10 1607
+        }
+
         /// <summary>Restores and brings the window to the front.</summary>
         public void Activate()
         {
@@ -156,6 +167,8 @@ namespace DbScanner.Win
         }
 
         public void Sleep(int ms) { if (ms > 0) Thread.Sleep(ms); }
+
+        public double DpiScale() { return window.DpiScale(); }
 
         public bool UserMovedMouse(int expectedX, int expectedY)
         {

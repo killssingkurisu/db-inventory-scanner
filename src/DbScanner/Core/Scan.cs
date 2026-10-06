@@ -24,6 +24,8 @@ namespace DbScanner.Core
         void Sleep(int ms);
         /// <summary>True when the user has taken the mouse somewhere else; the scan stops.</summary>
         bool UserMovedMouse(int expectedX, int expectedY);
+        /// <summary>The display scaling of the game's window as a factor: 1 at 100%, 1.5 at 150%.</summary>
+        double DpiScale();
     }
 
     public sealed class ScanOptions
@@ -73,7 +75,7 @@ namespace DbScanner.Core
         public double Score;
     }
 
-    public sealed class ScanResult
+    public sealed partial class ScanResult
     {
         public string CharacterName = "";
         public string Class = "";
@@ -142,7 +144,7 @@ namespace DbScanner.Core
     /// item in the bag pages and every charm, reads each tooltip, and looks the name up in the
     /// game's own item list. Positions come from UiLayout and GameGeometry.
     /// </summary>
-    public sealed class Scanner
+    public sealed partial class Scanner
     {
         readonly IGameSurface surface;
         readonly IOcr ocr;
@@ -200,14 +202,18 @@ namespace DbScanner.Core
         /// Where the game might be drawn: the whole client area (the launcher and the Flash
         /// projector), the 3:2 box the game's web page uses, or the picture found on screen.
         /// </summary>
-        public static List<GameGeometry> Candidates(RectI client, RgbImage clientShot)
+        public static List<GameGeometry> Candidates(RectI client, RgbImage clientShot, double dpi = 1)
         {
             var list = new List<GameGeometry>();
-            list.Add(GameGeometry.ForFlashArea(client.X, client.Y, client.W, client.H));
+            // On a scaled display (150% and the like) Flash lays the game out in device-independent
+            // pixels, so that layout is the likeliest; the unscaled one stays as a fallback.
+            if (dpi >= 1.01) list.Add(GameGeometry.ForFlashArea(client.X, client.Y, client.W, client.H, dpi));
+            var plain = GameGeometry.ForFlashArea(client.X, client.Y, client.W, client.H);
+            if (list.All(x => Math.Abs(x.Scale - plain.Scale) > 0.003 || Math.Abs(x.OriginX - plain.OriginX) > 2)) list.Add(plain);
             int bw = (int)Math.Min(client.W, client.H * 1.5), bh = (int)Math.Min(client.H, client.W / 1.5);
             var page = GameGeometry.ForFlashArea(client.X + (client.W - bw) / 2, client.Y + (client.H - bh) / 2, bw, bh);
             page.Source = "web page";
-            if (Math.Abs(page.Scale - list[0].Scale) > 0.003 || Math.Abs(page.OriginX - list[0].OriginX) > 2) list.Add(page);
+            if (list.All(x => Math.Abs(page.Scale - x.Scale) > 0.003 || Math.Abs(page.OriginX - x.OriginX) > 2)) list.Add(page);
             if (clientShot != null)
             {
                 RectI? found = Imaging.FindGameRect(clientShot);
@@ -228,7 +234,7 @@ namespace DbScanner.Core
             if (client.W < 200 || client.H < 150) throw new ScanAbortedException("The game window is too small or minimized.");
             var shot = surface.Capture(client);
             Debug("window", shot);
-            foreach (var g in Candidates(client, shot))
+            foreach (var g in Candidates(client, shot, surface.DpiScale()))
             {
                 UseGeometry(g);
                 if (EquippedTooltipAppears())
