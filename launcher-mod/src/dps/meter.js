@@ -289,7 +289,7 @@ class DpsMeter extends EventEmitter {
      *
      * Every spell cast is its own rotation entry. Basic attacks in a row are one entry, a run,
      * until something else is cast: they are the most frequent casts by far, and the run's
-     * count (ME3, RA5) goes up with each hit it lands.
+     * count (MA3, RA5) goes up with each hit it lands.
      */
     recordCast({ powerId, combo, projectile }) {
         // A cast alone never starts the clock (auto-start waits for the first hit).
@@ -340,10 +340,10 @@ class DpsMeter extends EventEmitter {
 
     /**
      * What a rotation entry shows: a spell's hotbar slot from the game's data (1-6: 1, 2, 3, 4,
-     * E, Q), ME or RA plus the hits so far for a run of basic attacks, initials for anything else.
+     * E, Q), MA or RA plus the hits so far for a run of basic attacks, initials for anything else.
      */
     badge(entry) {
-        if (entry.kind === 'melee') return 'ME' + entry.hits;
+        if (entry.kind === 'melee') return 'MA' + entry.hits;
         if (entry.kind === 'ranged') return 'RA' + entry.hits;
         if (entry.slot > 0) return String(entry.slot);
         return initials(entry.label);

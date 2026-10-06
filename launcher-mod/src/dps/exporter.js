@@ -170,7 +170,7 @@ function toJson(report, meta) {
         hits: report.hits.map((h) => ({ atMs: h[0], powerId: h[1], damage: h[2], crit: Boolean(h[3]), kind: h[4], target: h[5], summon: h[6] || null })),
         notes: [
             'Damage is what your game client sent to the server for each hit (packet 0x0A) and DoT tick (packet 0x79), including DoT ticks on the house training dummies, which the meter reads but never forwards. The server can add to it afterwards (the Soulthief passive, admin damage scaling), which is not included.',
-            'rotation.casts lists the casts (packet 0x09) in order while the timer ran: each hotbar spell cast (slot 1-6 = keys 1, 2, 3, 4, E, Q), runs of basic attacks in a row as one entry (kind melee or ranged, label ME<hits> or RA<hits>, casts = how many), and any other power that dealt damage. Each entry is credited with the hits and DoT ticks of its power until that power is cast again. rotation.steps is the same order as DPS Calculator combo steps, one "basic" per basic attack.',
+            'rotation.casts lists the casts (packet 0x09) in order while the timer ran: each hotbar spell cast (slot 1-6 = keys 1, 2, 3, 4, E, Q), runs of basic attacks in a row as one entry (kind melee or ranged, label MA<hits> (melee attack) or RA<hits> (ranged attack), casts = how many), and any other power that dealt damage. Each entry is credited with the hits and DoT ticks of its power until that power is cast again. rotation.steps is the same order as DPS Calculator combo steps, one "basic" per basic attack.',
             'Scaling: a direct hit counts toward the stat in its spell\'s Stats line ("1.49x attack"); every DoT tick counts toward Expertise, which the game puts into each DoT when it lands.'
         ]
     };

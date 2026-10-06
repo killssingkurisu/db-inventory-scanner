@@ -369,7 +369,7 @@ async function main() {
         assert.ok(sum.includes('Rotation: 1 1'), sum);
     });
 
-    await check('rotation: spells by hotbar slot, basic attacks as ME/RA runs counted by hits, DoTs per cast', () => {
+    await check('rotation: spells by hotbar slot, basic attacks as MA/RA runs counted by hits, DoTs per cast', () => {
         let now = 0;
         const m = new DpsMeter({ powers: table, now: () => now });
         m.start();
@@ -397,7 +397,7 @@ async function main() {
         m.recordCast({ powerId: 993 });
         m.recordDamage({ kind: 'dot', powerId: 993, damage: 600 }); // after the recast: the new cast's
         const r = m.snapshot().rotation;
-        assert.deepStrictEqual(r.entries.map((e) => e.badge), ['ME3', '1', 'RA2', '5', '1'], 'the missed melee run is left out');
+        assert.deepStrictEqual(r.entries.map((e) => e.badge), ['MA3', '1', 'RA2', '5', '1'], 'the missed melee run is left out');
         assert.deepStrictEqual(r.entries.map((e) => e.damage), [300, 6600, 145, 0, 600]);
         assert.deepStrictEqual(r.entries.map((e) => e.casts), [2, 1, 2, 1, 1]);
         assert.deepStrictEqual([r.entries[1].hits, r.entries[1].dotDamage, r.entries[0].crits], [2, 500, 1]);
@@ -407,12 +407,12 @@ async function main() {
         assert.deepStrictEqual(s.equipped.map((v) => [v.key, v.slot, v.hotkey]), [['PoisonStrike', 1, '1'], ['FireBolt', 5, 'E']], 'without a scan, used hotbar spells in slot order');
         const j = exporter.toJson(m.report(), { source: 't' });
         assert.deepStrictEqual(j.rotation.steps, ['basic', 'basic', 'PoisonStrike', 'basic', 'basic', 'FireBolt', 'PoisonStrike']);
-        assert.deepStrictEqual(j.rotation.casts.map((c) => c.label), ['ME3', '1', 'RA2', '5', '1']);
+        assert.deepStrictEqual(j.rotation.casts.map((c) => c.label), ['MA3', '1', 'RA2', '5', '1']);
         assert.deepStrictEqual([j.rotation.casts[0].casts, j.rotation.casts[0].hits, j.rotation.casts[3].slotKey], [2, 3, 'E']);
         const csv = exporter.toCsv(m.report(), { character: 'ksq' });
         assert.ok(csv.includes('\r\nRotation,Time (s),Shown as,Spell,Kind,Casts,Damage'), csv);
         assert.ok(csv.includes('\r\n2,0.9,1,Poison Strike,spell,1,6600,6100,500,2,0\r\n'), csv);
-        assert.ok(exporter.toSummary(m.report(), {}).includes('Rotation: ME3 1 RA2 5 1'));
+        assert.ok(exporter.toSummary(m.report(), {}).includes('Rotation: MA3 1 RA2 5 1'));
         m.reset();
         assert.strictEqual(m.snapshot().rotation.count, 0);
     });
