@@ -124,9 +124,11 @@ const POWER_DATA = {
         [984, 'PoisonStrike1', 'PoisonStrike', 'Poison Strike', 'Physical', '20', 0, 'x [Stats: 1x attack, 2x attack/s (5s) | Next rank: 1.1x attack, 2x attack/s (5s)]', 0],
         [500, 'FireBolt5', 'FireBolt', 'Fire Bolt', 'Fire', '25', 0, 'Hurl fire', 0],
         [3, 'SwordMelee', '', 'Sword Melee', 'Physical', '0,5', 0, '', 0],
-        [4000, 'SkeletonSlash', '', '', 'Physical', '0', 0, '', 1]
+        [4000, 'SkeletonSlash', '', '', 'Physical', '0', 0, '', 1],
+        [1094, 'PoisonDagger', '', 'Bone Daggers', 'Nature', '0,5', 0, 'Ranged basic attacks leave Poison [Stats: 0.8x attack, 0.5x Expertise/s (5s)]', 0, 'ProjectilePlayer'],
+        [969, 'RapierMelee', '', 'Dagger Melee', 'Physical', '0,5', 0, '', 0, 'MeleeCombo']
     ],
-    abilities: { PoisonStrike: ['Rogue', 'Assault', 1, 10], FireBolt: ['Mage', 'Fire', 5, 10] }
+    abilities: { PoisonStrike: ['Rogue', 'Assault', 1, 10], FireBolt: ['Mage', 'Fire', 5, 10], PoisonDagger: ['Executioner', 'Assault', 0, 1] }
 };
 
 async function main() {
@@ -353,6 +355,24 @@ async function main() {
         assert.strictEqual(g.perSecond[34], 2600, 'seconds 102-104: 5-second windows of 2200, 2600 and 3000');
         assert.strictEqual(g.running[66], 2000, 'the last running value is the fight DPS');
         assert.strictEqual(g.peak, 3000);
+    });
+
+    await check('basic attacks: melee or ranged from the power\'s TargetMethod, whatever the combo field says', () => {
+        let now = 0;
+        const m = new DpsMeter({ powers: table, now: () => now });
+        assert.strictEqual(m.castKind(1094, { isMelee: true, id: 1 }, false), 'ranged', 'Bone Daggers are thrown');
+        assert.strictEqual(m.castKind(1094, null, false), 'ranged');
+        assert.strictEqual(m.castKind(969, { isMelee: false, id: 1 }, true), 'melee');
+        assert.strictEqual(m.castKind(993, null, false), 'spell');
+        m.start();
+        m.recordCast({ powerId: 969, combo: { isMelee: true, id: 1 } });
+        m.recordDamage({ kind: 'hit', powerId: 969, damage: 10 });
+        m.recordCast({ powerId: 1094, combo: { isMelee: true, id: 1 } });
+        m.recordDamage({ kind: 'hit', powerId: 1094, damage: 10 });
+        m.recordCast({ powerId: 1094, combo: { isMelee: true, id: 2 } });
+        m.recordDamage({ kind: 'hit', powerId: 1094, damage: 10 });
+        m.recordDamage({ kind: 'dot', powerId: 1094, damage: 5 });
+        assert.strictEqual(m.snapshot().rotation.text, 'MA1 RA2');
     });
 
     console.log('Export');

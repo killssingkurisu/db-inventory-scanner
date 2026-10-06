@@ -32,7 +32,7 @@ function decodeEntities(s) {
         .replace(/&amp;/g, '&');
 }
 
-/** Raw records, compact: [id, name, base, display, damageType, mana, cooldownMs, description, isMonster]. */
+/** Raw records, compact: [id, name, base, display, damageType, mana, cooldownMs, description, isMonster, targetMethod]. */
 function parsePowerXml(xml, isMonster) {
     const out = [];
     const re = /<Power PowerName="([^"]+)">([\s\S]*?)<\/Power>/g;
@@ -52,7 +52,8 @@ function parsePowerXml(xml, isMonster) {
             tag(m[2], 'ManaCost'),
             Number(tag(m[2], 'CoolDownTime')) || 0,
             tag(m[2], 'Description'),
-            isMonster ? 1 : 0
+            isMonster ? 1 : 0,
+            tag(m[2], 'TargetMethod')
         ]);
     }
     return out;
@@ -144,7 +145,7 @@ class PowerTable {
         this.byId = new Map();
         this.abilities = data.abilities || {};
         for (const r of data.powers || []) {
-            const [id, name, base, display, damageType, mana, cooldown, description, monster] = r;
+            const [id, name, base, display, damageType, mana, cooldown, description, monster, targetMethod] = r;
             const group = base || name;
             let rank = 0;
             if (base && name.startsWith(base)) {
@@ -164,6 +165,9 @@ class PowerTable {
                 description: description || '',
                 scaling,
                 monster: Boolean(monster),
+                // How the power picks its target: MeleeCombo for melee basic attacks,
+                // ProjectilePlayer / ProjectileCombo for ranged ones, Self, RangedAoE, ...
+                targetMethod: targetMethod || '',
                 ability: this.abilities[group] || null
             });
         }

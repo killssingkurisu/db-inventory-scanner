@@ -273,14 +273,22 @@ class DpsMeter extends EventEmitter {
         this.emit('change');
     }
 
-    /** What a cast was: a hotbar 'spell', a basic attack ('melee' or 'ranged'), or 'other'. */
+    /**
+     * What a cast was: a hotbar 'spell', a basic attack ('melee' or 'ranged'), or 'other'.
+     * Melee or ranged comes from the power's TargetMethod in the game data (MeleeCombo,
+     * MeleePunch / ProjectilePlayer, ProjectileCombo): Bone Daggers are thrown, so ranged, even
+     * though the cast packet can carry a melee combo step. Only without that does the cast's own
+     * combo field or projectile decide.
+     */
     castKind(powerId, combo, projectile) {
         const p = this.powers ? this.powers.get(powerId) : null;
         if (p && p.ability && p.ability[2] > 0) return 'spell';
-        // The client marks each step of a basic attack chain (meleeCombo / rangedCombo).
+        if (!combo && !isBasicPower(p)) return 'other';
+        const how = p ? p.targetMethod : '';
+        if (/projectile|ranged|lobbed/i.test(how)) return 'ranged';
+        if (/melee|cleave|punch/i.test(how)) return 'melee';
         if (combo) return combo.isMelee ? 'melee' : 'ranged';
-        if (isBasicPower(p)) return /melee/i.test(p.name) || !projectile ? 'melee' : 'ranged';
-        return 'other';
+        return /melee/i.test(p.name) || !projectile ? 'melee' : 'ranged';
     }
 
     /**
